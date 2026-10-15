@@ -11,7 +11,7 @@ The label tells the model which diarized audio track belongs to the on-screen ac
 
 The app has two tools, picked on the start screen:
 
-1. **Video Splitter**: cut long videos (30–50+ min, where the off-screen speaker keeps changing) into short clips. See [Split long videos](#split-long-videos).
+1. **Video Splitter**: cut long videos (30–50+ min, where the off-screen speaker keeps changing) into short clips, optionally cropped to part of the picture. See [Split long videos](#split-long-videos).
 2. **Video Labeler**: label who speaks first in each clip. See [How to label](#how-to-label).
 
 The **⌂** button at the top left goes back to the start screen. An open project stays open, so you can switch between the tools.
@@ -62,15 +62,18 @@ Options:
    - **Ranges:** press `I` (**Start**) where a part begins and `O` (**End**) where it ends. Everything between segments is left out.
    - **Markers:** press `M` to drop a split marker, then click **Segments from markers**. This cuts the whole video into back-to-back pieces at the markers (parts that overlap an existing segment are skipped). Delete the pieces you don't want.
 3. Fine-tune: drag a segment to move it, drag its edges to resize it (the video shows the frame at the edge), or type exact times in the segment list (`1:02:03.500`, `2:03.5` or `123.5`). Segments can't overlap. Double-click a segment, or click ▶ in the list, to play just that segment.
-4. Click **Export clips**. Each segment is saved as its own MP4, numbered in time order: `interview.mp4` → `interview_1.mp4`, `interview_2.mp4`, … You can cancel at any time. Clips that are already finished are kept.
-5. Click **Open in Labeler** to label the new clips. The labeler setup opens with the output folder filled in.
+4. Optional: crop the picture. Click **Crop** (or press `C`) under the video, then drag on the video to draw a box. Drag the box to move it and its corners or edges to resize it. Pick a shape (**Free**, **1:1**, **9:16** or **16:9**) to lock the box to it. **Reset** goes back to the full frame. Click **Done** (or press `C` or `Esc`) when you're finished; the box stays outlined on the video. The crop applies to every clip of this video.
+5. Click **Export clips**. Each segment is saved as its own MP4, numbered in time order: `interview.mp4` → `interview_1.mp4`, `interview_2.mp4`, … You can cancel at any time. Clips that are already finished are kept.
+6. Click **Open in Labeler** to label the new clips. The labeler setup opens with the output folder filled in.
 
-Shortcuts: `Space` play/pause · `←` / `→` 5 s back/forward (`Shift`: 1 s) · `,` / `.` one frame · `I` / `O` start/end · `M` marker · `Delete` delete the selected segment or marker · `Ctrl+Z` undo · `Ctrl`+mouse wheel or `+` / `-` zoom · `0` show the whole video · `Esc` cancel a started segment.
+Shortcuts: `Space` play/pause · `←` / `→` 5 s back/forward (`Shift`: 1 s) · `,` / `.` one frame · `I` / `O` start/end · `M` marker · `C` crop · `Delete` delete the selected segment or marker · `Ctrl+Z` undo · `Ctrl`+mouse wheel or `+` / `-` zoom · `0` show the whole video · `Esc` cancel a started segment or finish cropping.
 
 Notes:
 
 - **Cuts are frame-accurate.** Clips are re-encoded to H.264/AAC MP4, so they always play in the labeler. This takes time: about 1–3 minutes of work for every 10 minutes of clips, depending on the PC.
-- **Your segments are saved as you work**, in `_splits.json` in the output folder. Open the same folders again to continue. The file also records which part of which source video every exported clip came from.
+- **Your segments and crop are saved as you work**, in `_splits.json` in the output folder. Open the same folders again to continue. The file also records which part of which source video every exported clip came from, including the crop box (in pixels of the source video).
+- **Changing the crop after exporting** doesn't change clips that are already saved. Their names turn grey in the segment list again; export again to update them.
+- The crop's width and height are rounded to even pixels, because H.264 video needs an even size. With a locked shape, the clip's size can therefore be a pixel or two off the exact ratio.
 - **Exporting a video again replaces its old clips.** The app asks first. Old clips that aren't in the new segment list are deleted, so the clips always match the segments.
 - The sidebar dot is blue when a video has exported clips and hollow when it has segments that aren't exported yet.
 - ffmpeg comes with the Windows app. When you run from source, `pip install -r requirements.txt` installs it (`imageio-ffmpeg`). If that isn't possible, an `ffmpeg` on PATH is used instead.

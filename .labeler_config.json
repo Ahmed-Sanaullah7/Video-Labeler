@@ -1,4 +1,6 @@
 {
   "videos": "C:\\Users\\Waqas Iqrar\\Downloads\\Video",
-  "output": "D:\\output"
+  "output": "D:\\output",
+  "split_source": "C:\\Podcast For Stream",
+  "split_output": "C:\\Clipper"
 }

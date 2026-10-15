@@ -449,6 +449,31 @@ input[type="text"]:focus, input[type="search"]:focus { outline: none; border-col
 .split-head { display: flex; align-items: baseline; gap: 14px; min-width: 0; }
 .split-head .current-name { min-width: 0; }
 .split-head .now-meta { margin: 0; }
+.crop-tools { align-self: center; flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+.crop-info { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.segmented.sm { padding: 2px; border-radius: 8px; }
+.segmented.sm button { height: 24px; padding: 0 9px; border-radius: 6px; font-size: 12.5px; }
+
+/* The crop layer covers the picture (not the black bars); the box is placed in % of it. */
+.crop-layer { position: absolute; pointer-events: none; user-select: none; touch-action: none; }
+.crop-layer.editing { pointer-events: auto; cursor: crosshair; }
+.crop-box { position: absolute; outline: 1.5px dashed rgba(255, 255, 255, .8); box-shadow: 0 0 0 100vmax rgba(0, 0, 0, .3); }
+.crop-layer.editing .crop-box { outline: 2px solid #fff; box-shadow: 0 0 0 100vmax rgba(0, 0, 0, .55); cursor: move; }
+.crop-layer.editing.full .crop-box { cursor: crosshair; }
+.crop-h {
+  display: none; position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px;
+  border-radius: 3px; background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .45);
+}
+.crop-layer.editing .crop-h { display: block; }
+.crop-layer.editing.locked .crop-h:is([data-h="n"], [data-h="e"], [data-h="s"], [data-h="w"]) { display: none; }
+.crop-h[data-h="nw"] { left: 0; top: 0; cursor: nwse-resize; }
+.crop-h[data-h="n"] { left: 50%; top: 0; cursor: ns-resize; }
+.crop-h[data-h="ne"] { left: 100%; top: 0; cursor: nesw-resize; }
+.crop-h[data-h="e"] { left: 100%; top: 50%; cursor: ew-resize; }
+.crop-h[data-h="se"] { left: 100%; top: 100%; cursor: nwse-resize; }
+.crop-h[data-h="s"] { left: 50%; top: 100%; cursor: ns-resize; }
+.crop-h[data-h="sw"] { left: 0; top: 100%; cursor: nesw-resize; }
+.crop-h[data-h="w"] { left: 0; top: 50%; cursor: ew-resize; }
 .dot.split { background: var(--primary); border-color: var(--primary); }
 .dot.pending { border-color: var(--primary); background: var(--primary-soft); }
 .stat.split { background: var(--primary-soft); }
@@ -458,7 +483,7 @@ input[type="text"]:focus, input[type="search"]:focus { outline: none; border-col
 
 .timeline { padding: 12px 14px 14px; }
 .tl-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
-.tl-toolbar .btn kbd { height: 18px; min-width: 18px; margin-left: 2px; font-size: 10.5px; }
+.tl-toolbar .btn kbd, .crop-tools .btn kbd { height: 18px; min-width: 18px; margin-left: 2px; font-size: 10.5px; }
 .tl-sep { width: 1px; height: 20px; margin: 0 4px; background: var(--border); }
 .tl-zoom-label { min-width: 44px; text-align: center; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .icon-btn:disabled { opacity: .4; cursor: default; background: transparent; }

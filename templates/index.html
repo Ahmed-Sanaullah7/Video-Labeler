@@ -55,6 +55,7 @@
   <symbol id="i-end" viewBox="0 0 24 24"><path d="M15 4h3v16h-3"/><path d="M4 12h9"/><path d="m9 8 4 4-4 4"/></symbol>
   <symbol id="i-fit" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></symbol>
   <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></symbol>
+  <symbol id="i-crop" viewBox="0 0 24 24"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></symbol>
 </svg>
 
 <!-- ============ Header (always visible) ============ -->
@@ -226,12 +227,30 @@
     <div id="split-work" class="work wide">
       <div class="player-card">
         <video id="split-player" controls playsinline></video>
+        <div id="crop-layer" class="crop-layer hidden">
+          <div id="crop-box" class="crop-box">
+            <span class="crop-h" data-h="nw"></span><span class="crop-h" data-h="n"></span><span class="crop-h" data-h="ne"></span><span class="crop-h" data-h="e"></span>
+            <span class="crop-h" data-h="se"></span><span class="crop-h" data-h="s"></span><span class="crop-h" data-h="sw"></span><span class="crop-h" data-h="w"></span>
+          </div>
+        </div>
         <div id="split-video-error" class="video-error hidden"><svg class="ic"><use href="#i-alert"/></svg>This video can't be played here. Convert it to MP4 (H.264/AAC).</div>
       </div>
 
       <div class="split-head">
         <div id="split-name" class="current-name">—</div>
         <div class="now-meta"><span id="split-time">0:00.000 / 0:00</span><span id="split-save" class="badge">Saved</span></div>
+        <div class="spacer"></div>
+        <div class="crop-tools">
+          <span id="crop-info" class="crop-info hidden"></span>
+          <div id="crop-aspect" class="segmented sm hidden" title="Shape of the crop">
+            <button data-aspect="free">Free</button>
+            <button data-aspect="1:1">1:1</button>
+            <button data-aspect="9:16">9:16</button>
+            <button data-aspect="16:9">16:9</button>
+          </div>
+          <button id="crop-reset" class="btn ghost sm hidden" title="Go back to the full frame">Reset</button>
+          <button id="crop-btn" class="btn sm" title="Crop the video: every clip of this video is cut to the box (C)"><svg class="ic"><use href="#i-crop"/></svg><span id="crop-btn-text">Crop</span><kbd>C</kbd></button>
+        </div>
       </div>
 
       <div class="timeline card">
@@ -290,6 +309,7 @@
         <span><kbd>,</kbd><kbd>.</kbd> frame</span>
         <span><kbd>I</kbd><kbd>O</kbd> start / end</span>
         <span><kbd>M</kbd> marker</span>
+        <span><kbd>C</kbd> crop</span>
         <span><kbd>Del</kbd> delete</span>
         <span><kbd>Ctrl</kbd><kbd>Z</kbd> undo</span>
         <span><kbd>Ctrl</kbd>+wheel zoom</span>
