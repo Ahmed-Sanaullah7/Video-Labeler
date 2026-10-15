@@ -15,7 +15,7 @@ The app has three tools, picked on the start screen:
 2. **Video Splitter**: cut long videos (30–50+ min, where the off-screen speaker keeps changing) into short clips, optionally cropped to part of the picture. See [Split long videos](#split-long-videos).
 3. **Video Labeler**: label who speaks first in each clip. See [How to label](#how-to-label).
 
-The **⌂** button at the top left goes back to the start screen. An open project stays open, so you can switch between the tools.
+The **⌂** button at the top left goes back to the start screen. Switch between the tools with the **Download**, **Split** and **Label** tabs in the top bar. An open project stays open, so switching keeps your place.
 
 ## Install (Windows app)
 
@@ -58,6 +58,8 @@ Options:
 
 ## Download videos
 
+The **Settings** panel on the left holds everything below, with **Start download** at its bottom. On the right are the **Overview** (counts and progress), the **Videos** list and the **Activity** log.
+
 1. On the start screen, click **Video Downloader**. Pick the spreadsheet (`.xlsx` or `.csv`) with the video links (**Browse** opens a file picker).
 2. The app reads the sheet and lists the links it found. It picks the column with the links, and a column for the file names (e.g. `Name` or `Title`), by itself. To change them, pick the **Sheet**, **Link column** and **Name column** yourself. **Name column → Video title** names each file after the video's own title instead.
 3. Pick the **Quality** (default 1080p) and how many videos download at once (**Parallel downloads**, default 3; YouTube starts throttling above 4). Optional:
@@ -77,25 +79,27 @@ Notes:
 
 ## Split long videos
 
+The splitter is laid out like a video editor: the **Media** panel on the left lists the long videos, the **Program** monitor in the middle plays the open video (with play, frame-step and mark buttons and a timecode underneath), the **Properties** panel on the right has the crop, the segment list and **Export clips**, and the **Timeline** runs along the bottom. The **▯** button in the top bar hides or shows the Media panel.
+
 1. On the start screen, click **Video Splitter**. Pick the folder with the long videos and an **output (dataset) folder** for the clips. The output folder can't be the same as the long-videos folder.
-2. Pick a video in the sidebar and play it. Mark the parts you want to keep on the timeline:
-   - **Ranges:** press `I` (**Start**) where a part begins and `O` (**End**) where it ends. Everything between segments is left out.
+2. Pick a video in the Media panel and play it (`Space`, the ▶ button or a click on the picture). Mark the parts you want to keep:
+   - **Ranges:** press `I` (**Mark In**) where a part begins and `O` (**Mark Out**) where it ends, or use the buttons under the video. Everything between segments is left out.
    - **Markers:** press `M` to drop a split marker, then click **Segments from markers**. This cuts the whole video into back-to-back pieces at the markers (parts that overlap an existing segment are skipped). Delete the pieces you don't want.
 3. Fine-tune: drag a segment to move it, drag its edges to resize it (the video shows the frame at the edge), or type exact times in the segment list (`1:02:03.500`, `2:03.5` or `123.5`). Segments can't overlap. Double-click a segment, or click ▶ in the list, to play just that segment.
-4. Optional: crop the picture. Click **Crop** (or press `C`) under the video, then drag on the video to draw a box. Drag the box to move it and its corners or edges to resize it. Pick a shape (**Free**, **1:1**, **9:16** or **16:9**) to lock the box to it. **Reset** goes back to the full frame. Click **Done** (or press `C` or `Esc`) when you're finished; the box stays outlined on the video. The crop applies to every clip of this video.
-5. Click **Export clips**. Each segment is saved as its own MP4, numbered in time order: `interview.mp4` → `interview_1.mp4`, `interview_2.mp4`, … You can cancel at any time. Clips that are already finished are kept.
+4. Optional: crop the picture. In **Properties → Crop**, click **Edit crop** (or press `C`), then drag on the video to draw a box. Drag the box to move it and its corners or edges to resize it, or type exact pixel values in **X**, **Y**, **W** and **H**. Pick a shape (**Free**, **1:1**, **9:16** or **16:9**) to lock the box to it. **Reset** goes back to the full frame. Click **Done** (or press `C` or `Esc`) when you're finished; the box stays outlined on the video. The crop applies to every clip of this video.
+5. Click **Export clips** (bottom of the Properties panel). Each segment is saved as its own MP4, numbered in time order: `interview.mp4` → `interview_1.mp4`, `interview_2.mp4`, … You can cancel at any time. Clips that are already finished are kept. Exported clips get a ✓ on the timeline and turn green in the segment list.
 6. Click **Open in Labeler** to label the new clips. The labeler setup opens with the output folder filled in.
 
-Shortcuts: `Space` play/pause · `←` / `→` 5 s back/forward (`Shift`: 1 s) · `,` / `.` one frame · `I` / `O` start/end · `M` marker · `C` crop · `Delete` delete the selected segment or marker · `Ctrl+Z` undo · `Ctrl`+mouse wheel or `+` / `-` zoom · `0` show the whole video · `Esc` cancel a started segment or finish cropping.
+Shortcuts: `Space` play/pause · `←` / `→` 5 s back/forward (`Shift`: 1 s) · `,` / `.` one frame · `↑` / `↓` previous/next segment edge or marker · `I` / `O` mark in/out · `M` marker · `C` crop · `Delete` delete the selected segment or marker · `Ctrl+Z` undo · `Ctrl`+mouse wheel or `+` / `-` zoom · `0` show the whole video · `Esc` cancel a started segment or finish cropping.
 
 Notes:
 
 - **Cuts are frame-accurate.** Clips are re-encoded to H.264/AAC MP4, so they always play in the labeler. This takes time: about 1–3 minutes of work for every 10 minutes of clips, depending on the PC.
 - **Your segments and crop are saved as you work**, in `_splits.json` in the output folder. Open the same folders again to continue. The file also records which part of which source video every exported clip came from, including the crop box (in pixels of the source video).
-- **Changing the crop after exporting** doesn't change clips that are already saved. Their names turn grey in the segment list again; export again to update them.
-- The crop's width and height are rounded to even pixels, because H.264 video needs an even size. With a locked shape, the clip's size can therefore be a pixel or two off the exact ratio.
+- **Changing the crop after exporting** doesn't change clips that are already saved. Their names turn grey in the segment list again and lose their ✓ on the timeline; export again to update them.
+- The crop's width and height are rounded to even pixels, because H.264 video needs an even size. With **9:16** or **16:9**, the clip's size can therefore be a pixel or two off the exact ratio (**1:1** is always exactly square).
 - **Exporting a video again replaces its old clips.** The app asks first. Old clips that aren't in the new segment list are deleted, so the clips always match the segments.
-- The sidebar dot is blue when a video has exported clips and hollow when it has segments that aren't exported yet.
+- In the Media panel, a video's dot is blue when it has exported clips and hollow when it has segments that aren't exported yet.
 - ffmpeg comes with the Windows app. When you run from source, `pip install -r requirements.txt` installs it (`imageio-ffmpeg`). If that isn't possible, an `ffmpeg` on PATH is used instead.
 
 ## How to label
@@ -104,8 +108,8 @@ Notes:
 2. Click **On-screen**, **Off-screen** or **Unclear / Skip** (or press `1` / `2` / `3`).
 3. The label is saved straight away and the next video opens.
 
-Shortcuts: `←` / `→` previous/next · `Space` play/pause · `R` replay · `N` next unlabeled video.
-The sidebar lists every video with a colored dot (green = on-screen, orange = off-screen, grey = unclear), with a count per label. Use **All / To do / Done** to filter the list. **⚙ Settings → Show labels file** opens the output folder with the Excel file selected.
+Shortcuts: `←` / `→` previous/next · `Space` play/pause · `R` replay (or the ↻ button under the video) · `N` next unlabeled video.
+The Media panel lists every video with a colored dot (green = on-screen, orange = off-screen, grey = unclear), with a count per label. Use **All / To do / Done** to filter the list. **⚙ Settings → Show labels file** opens the output folder with the Excel file selected.
 
 **Resume:** open the same project again and the app continues at the first unlabeled video. If you go back to a video you already labeled, its label is highlighted. Click another option to change it, or click **Clear label**.
 

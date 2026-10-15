@@ -10,6 +10,7 @@ const TICK_STEPS = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600
 const SAVE_TEXT = { saved: "Saved", pending: "Unsaved changes", saving: "Saving…", error: "Not saved" };
 const MIN_CROP = 32;          // pixels, same as splitter.MIN_CROP
 const ASPECT_KEY = "labeler:splitter:cropAspect";
+const VOLUME_KEY = "labeler:splitter:volume";
 const ASPECTS = { free: null, "1:1": 1, "9:16": 9 / 16, "16:9": 16 / 9 };  // width / height
 
 let split = null;   // last /api/split/state response (ready)
@@ -48,6 +49,13 @@ function fmtTime(t, ms = true) {
   const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
   const sec = ms ? s.toFixed(3).padStart(6, "0") : String(Math.floor(s)).padStart(2, "0");
   return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+}
+
+// Monitor timecode, fixed width: 00:01:02.500
+function fmtTimecode(t) {
+  t = r3(Math.max(0, t || 0));
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${s.toFixed(3).padStart(6, "0")}`;
 }
 
 // "1:02:03.5", "2:03.5" or "123.5" -> seconds; null if it isn't a time.
@@ -365,6 +373,47 @@ function seek(t) {
 
 function seekBy(dt) { seek((sPlayer().currentTime || 0) + dt); }
 
+function togglePlay() {
+  const p = sPlayer();
+  if (!tl.duration) return;
+  if (p.paused) p.play().catch(() => {});
+  else p.pause();
+}
+
+function stepFrame(dir) {
+  sPlayer().pause();
+  seekBy(dir * FRAME);
+}
+
+// Jump to the previous / next segment edge or marker (dir -1 / +1).
+function gotoCut(dir) {
+  if (!tl.duration) return;
+  const t = sPlayer().currentTime || 0;
+  const cuts = [0, tl.duration, ...tl.markers, ...tl.segments.flatMap((s) => [s.start, s.end])];
+  const ahead = cuts.filter((c) => (dir > 0 ? c > t + 0.01 : c < t - 0.01));
+  if (!ahead.length) return;
+  sPlayer().pause();
+  seek(dir > 0 ? Math.min(...ahead) : Math.max(...ahead));
+  followPlayhead();
+}
+
+function renderPlayState() {
+  const p = sPlayer();
+  $("tp-play-icon").setAttribute("href", p.paused ? "#i-play" : "#i-pause");
+  $("tp-play").title = p.paused ? "Play (Space)" : "Pause (Space)";
+  const silent = p.muted || p.volume === 0;
+  $("tp-mute-icon").setAttribute("href", silent ? "#i-mute" : "#i-volume");
+  $("tp-mute").title = p.muted ? "Unmute" : "Mute";
+  $("tp-volume").value = p.muted ? 0 : p.volume;
+}
+
+function setVolume(v) {
+  const p = sPlayer();
+  p.volume = clamp(v, 0, 1);
+  p.muted = p.volume === 0;
+  localStorage.setItem(VOLUME_KEY, String(p.volume));
+}
+
 function playSegment(i) {
   const s = tl.segments[i];
   if (!s) return;
@@ -417,8 +466,12 @@ function renderTimeline() {
     el.dataset.index = i;
     el.style.left = `${pct(s.start)}%`;
     el.style.width = `${pct(s.end - s.start)}%`;
-    el.title = `Segment ${i + 1}: ${fmtTime(s.start)} – ${fmtTime(s.end)}\nDrag to move, drag the edges to resize, double-click to play`;
-    el.innerHTML = `<span class="tl-handle l" data-edge="start"></span><b>${i + 1}</b><span class="tl-handle r" data-edge="end"></span>`;
+    const done = exportState(s, i) === "done";
+    el.title = `Segment ${i + 1}: ${fmtTime(s.start)} – ${fmtTime(s.end)} → ${clipName(i + 1)}${done ? " (exported)" : ""}\n`
+      + "Drag to move, drag the edges to resize, double-click to play";
+    el.innerHTML = `<span class="tl-handle l" data-edge="start"></span><b>${i + 1}</b><span class="tl-seg-name"></span>`
+      + `${done ? '<svg class="ic"><use href="#i-check"/></svg>' : ""}<span class="tl-handle r" data-edge="end"></span>`;
+    el.querySelector(".tl-seg-name").textContent = clipName(i + 1);
     track.appendChild(el);
   });
   if (tl.pendingIn !== null) {
@@ -470,7 +523,8 @@ function renderRuler() {
 function updatePlayhead() {
   const t = sPlayer().currentTime || 0;
   $("tl-playhead").style.left = `${pct(t)}%`;
-  $("split-time").textContent = `${fmtTime(t)} / ${fmtTime(tl.duration, false)}`;
+  $("split-time").textContent = fmtTimecode(t);
+  $("split-dur").textContent = fmtTimecode(tl.duration);
   const range = $("tl-pending-range");
   if (range && tl.pendingIn !== null) {
     range.style.left = `${pct(Math.min(t, tl.pendingIn))}%`;
@@ -497,7 +551,8 @@ function setZoom(z, anchorX) {
 
 function renderToolbar() {
   const hasVideo = tl.duration > 0;
-  ["tl-in", "tl-out", "tl-marker"].forEach((id) => { $(id).disabled = !hasVideo; });
+  ["tl-in", "tl-out", "tl-marker", "tp-play", "tp-back", "tp-fwd", "tp-prev-cut", "tp-next-cut"]
+    .forEach((id) => { $(id).disabled = !hasVideo; });
   $("tl-from-markers").disabled = !tl.markers.length;
   $("tl-delete").disabled = !tl.selected;
   $("tl-undo").disabled = !tl.undo.length;
@@ -594,6 +649,10 @@ function evenBox(b) {
   return { x: clamp(x, 0, tl.vw - w), y: clamp(y, 0, tl.vh - h), w, h };
 }
 
+// Sizes made from a shape are rounded down to even pixels before placing the box, so evenBox keeps
+// them as they are (a 1:1 box stays exactly square).
+function evenDown(v) { return 2 * Math.floor(v / 2); }
+
 // The box from a fixed corner (ax, ay) to the pointer, in the chosen shape and inside the frame.
 function boxFromCorner(ax, ay, px, py) {
   let w = Math.abs(px - ax), h = Math.abs(py - ay);
@@ -601,8 +660,8 @@ function boxFromCorner(ax, ay, px, py) {
   if (a) {
     if (w < h * a) w = h * a; else h = w / a;
     const fit = Math.min(1, (px < ax ? ax : tl.vw - ax) / w, (py < ay ? ay : tl.vh - ay) / h);
-    w *= fit;
-    h *= fit;
+    w = evenDown(w * fit);
+    h = evenDown(h * fit);
   }
   if (!(w >= MIN_CROP && h >= MIN_CROP)) return null;  // too small, or no room on that side
   return evenBox({ x: px < ax ? ax - w : ax, y: py < ay ? ay - h : ay, w, h });
@@ -646,7 +705,6 @@ function renderCrop() {
   const ready = !!tl.file && tl.vw > 0;
   if (!ready) tl.cropMode = false;
   const editing = tl.cropMode, b = cropBox(), layer = $("crop-layer");
-  if (sPlayer().controls === editing) sPlayer().controls = !editing;  // while cropping, the box takes the mouse
   layer.classList.toggle("hidden", !ready || !(editing || tl.crop));
   layer.classList.toggle("editing", editing);
   layer.classList.toggle("locked", !!aspectRatio());
@@ -662,16 +720,39 @@ function renderCrop() {
   const btn = $("crop-btn");
   btn.disabled = !ready;
   btn.classList.toggle("primary", editing);
-  btn.title = editing ? "Finish cropping (C or Esc)" : "Crop the video: every clip of this video is cut to the box (C)";
-  $("crop-btn-text").textContent = editing ? "Done" : "Crop";
-  $("crop-aspect").classList.toggle("hidden", !editing);
-  $("crop-aspect").querySelectorAll("button").forEach((el) => el.classList.toggle("active", el.dataset.aspect === aspectName()));
-  $("crop-reset").classList.toggle("hidden", !editing);
+  btn.title = editing ? "Finish cropping (C or Esc)" : "Draw the crop box on the video (C)";
+  $("crop-btn-text").textContent = editing ? "Done" : "Edit crop";
+  $("crop-aspect").querySelectorAll("button").forEach((el) => {
+    el.classList.toggle("active", el.dataset.aspect === aspectName());
+    el.disabled = !ready;
+  });
   $("crop-reset").disabled = !tl.crop;
-  const info = $("crop-info");
-  info.classList.toggle("hidden", !ready || !(editing || tl.crop));
-  info.textContent = !tl.crop ? `Full frame ${tl.vw} × ${tl.vh}`
-    : editing ? `${b.w} × ${b.h} at ${b.x}, ${b.y}` : `Cropped to ${b.w} × ${b.h}`;
+  $("crop-info").textContent = !ready ? "" : tl.crop ? `${b.w} × ${b.h}` : `Full frame ${tl.vw} × ${tl.vh}`;
+  for (const input of document.querySelectorAll(".crop-fields input")) {
+    input.disabled = !ready;
+    if (document.activeElement !== input) input.value = ready ? b[input.dataset.key] : "";
+  }
+}
+
+// A value typed in the X / Y / W / H fields. With a locked shape, W and H change together.
+function onCropField(input) {
+  const key = input.dataset.key, v = Number(input.value);
+  if (!tl.vw || input.value === "" || !Number.isFinite(v) || v < 0) return renderCrop();
+  const b = { ...cropBox(), [key]: key === "w" || key === "h" ? Math.max(v, MIN_CROP) : v };
+  const a = aspectRatio();
+  if (a && key === "w") b.h = b.w / a;
+  if (a && key === "h") b.w = b.h * a;
+  const fit = Math.min(1, tl.vw / b.w, tl.vh / b.h);
+  b.w = evenDown(b.w * fit);
+  b.h = evenDown(b.h * fit);
+  b.x = clamp(b.x, 0, tl.vw - b.w);
+  b.y = clamp(b.y, 0, tl.vh - b.h);
+  const box = evenBox(b);
+  const next = isFullFrame(box) ? null : box;
+  if (sameCrop(next, tl.crop)) return renderCrop();
+  pushUndo();
+  tl.crop = next;
+  changed();
 }
 
 function toggleCrop(on = !tl.cropMode) {
@@ -684,12 +765,13 @@ function toggleCrop(on = !tl.cropMode) {
 // Pick a shape. The box keeps its centre and about its area, and shrinks if it doesn't fit the frame.
 function setAspect(name) {
   localStorage.setItem(ASPECT_KEY, name);
+  if (!tl.cropMode) toggleCrop(true);  // picking a shape means cropping
   const a = ASPECTS[name], b = cropBox();
   if (!a || !tl.vw || Math.abs(b.w / b.h - a) < 0.01) return renderCrop();
   let h = Math.sqrt((b.w * b.h) / a), w = h * a;
   const fit = Math.min(1, tl.vw / w, tl.vh / h);
-  w *= fit;
-  h *= fit;
+  w = evenDown(w * fit);
+  h = evenDown(h * fit);
   pushUndo();
   const box = evenBox({ x: clamp(b.x + (b.w - w) / 2, 0, tl.vw - w), y: clamp(b.y + (b.h - h) / 2, 0, tl.vh - h), w, h });
   tl.crop = isFullFrame(box) ? null : box;
@@ -738,52 +820,55 @@ function onCropUp() {
 
 // ---------------------------------------------------------------- segment list
 
+// "done": exported with these times and the current crop; "crop": same times, other crop; "": not exported.
+function exportState(s, i) {
+  const name = clipName(i + 1);
+  const same = tl.exported.filter((x) => x.file === name && Math.abs(x.start - s.start) < 0.002 && Math.abs(x.end - s.end) < 0.002);
+  if (same.some((x) => sameCrop(x.crop, tl.crop))) return "done";
+  return same.length ? "crop" : "";
+}
+
 function renderSegments() {
   const body = $("seg-body");
   body.innerHTML = "";
   if (!tl.file) return;
-  const sameTimes = (x, s, name) => x.file === name && Math.abs(x.start - s.start) < 0.002 && Math.abs(x.end - s.end) < 0.002;
-  const done = (s, name) => tl.exported.some((x) => sameTimes(x, s, name) && sameCrop(x.crop, tl.crop));
-  const oldCrop = (s, name) => tl.exported.some((x) => sameTimes(x, s, name));
   tl.segments.forEach((s, i) => {
-    const tr = document.createElement("tr");
-    tr.dataset.index = i;
-    tr.className = isSel("segment", i) ? "selected" : "";
-    tr.innerHTML = `
-      <td><span class="seg-num">${i + 1}</span></td>
-      <td><input class="time" type="text" data-edge="start" spellcheck="false" title="Start (h:mm:ss.mmm)"></td>
-      <td><input class="time" type="text" data-edge="end" spellcheck="false" title="End (h:mm:ss.mmm)"></td>
-      <td>${fmtTime(s.end - s.start)}</td>
-      <td class="seg-clip"></td>
-      <td class="actions">
-        <button class="icon-btn sm" data-act="play" title="Play this segment"><svg class="ic"><use href="#i-play"/></svg></button>
-        <button class="icon-btn sm" data-act="delete" title="Delete this segment"><svg class="ic"><use href="#i-trash"/></svg></button>
-      </td>`;
-    tr.querySelector('[data-edge="start"]').value = fmtTime(s.start);
-    tr.querySelector('[data-edge="end"]').value = fmtTime(s.end);
-    const name = clipName(i + 1);
-    const clip = tr.querySelector(".seg-clip");
-    clip.textContent = name;
-    if (done(s, name)) {
-      clip.classList.add("exists");
-      clip.title = "Exported";
-    } else if (oldCrop(s, name)) {
-      clip.title = "Exported with a different crop. Export again to update it.";
-    }
-    body.appendChild(tr);
+    const row = document.createElement("div");
+    row.dataset.index = i;
+    row.className = `seg-row${isSel("segment", i) ? " selected" : ""}`;
+    row.innerHTML = `
+      <div class="seg-top">
+        <span class="seg-num">${i + 1}</span>
+        <span class="seg-clip"></span>
+        <span class="seg-dur" title="Length">${fmtTime(s.end - s.start)}</span>
+        <button class="icon-btn" data-act="play" title="Play this segment"><svg class="ic"><use href="#i-play"/></svg></button>
+        <button class="icon-btn" data-act="delete" title="Delete this segment"><svg class="ic"><use href="#i-trash"/></svg></button>
+      </div>
+      <div class="seg-times">
+        <label>In<input class="time" type="text" data-edge="start" spellcheck="false" title="Start (h:mm:ss.mmm)"></label>
+        <label>Out<input class="time" type="text" data-edge="end" spellcheck="false" title="End (h:mm:ss.mmm)"></label>
+      </div>`;
+    row.querySelector('[data-edge="start"]').value = fmtTime(s.start);
+    row.querySelector('[data-edge="end"]').value = fmtTime(s.end);
+    const clip = row.querySelector(".seg-clip");
+    clip.textContent = clipName(i + 1);
+    const ex = exportState(s, i);
+    clip.classList.toggle("exists", ex === "done");
+    clip.title = ex === "done" ? "Exported" : ex === "crop" ? "Exported with a different crop. Export again to update it." : "Not exported yet";
+    body.appendChild(row);
   });
   const n = tl.segments.length;
   const total = tl.segments.reduce((sum, s) => sum + s.end - s.start, 0);
   $("seg-count").textContent = n;
-  $("seg-total").textContent = n ? `${fmtTime(total, false)} of ${fmtTime(tl.duration, false)} in clips` : "";
+  $("seg-total").textContent = n ? `${fmtTime(total, false)} of ${fmtTime(tl.duration, false)}` : "";
+  $("seg-total").title = n ? "Total length of the clips, of the whole video" : "";
   $("seg-empty").classList.toggle("hidden", n > 0);
-  document.querySelector(".seg-table").classList.toggle("hidden", n === 0);
   $("seg-clear").disabled = !n && !tl.markers.length;
   $("export-btn").disabled = !n || jobRunning;
 }
 
 function onTimeInput(input) {
-  const i = Number(input.closest("tr").dataset.index);
+  const i = Number(input.closest(".seg-row").dataset.index);
   const t = parseTime(input.value);
   if (t === null || !setEdge(i, input.dataset.edge, r3(Math.min(t, tl.duration || t)))) {
     toast("That time doesn't fit: segments can't overlap and must be at least 0.2 s long.", true);
@@ -853,6 +938,7 @@ async function finishJob(job) {
     const entry = await api("GET", `/api/split/segments/${enc(job.file)}`);
     tl.exported = entry.exported;
     tl.clips = entry.clips;
+    renderTimeline();  // check marks on the exported clips
     renderSegments();
   }
   const saved = job.done.length;
@@ -863,7 +949,8 @@ async function finishJob(job) {
   } else if (job.cancelled) {
     toast(`Export cancelled. ${saved} of ${job.total} clips were saved.`);
   } else {
-    $("export-done-text").textContent = `${saved} clip${saved === 1 ? "" : "s"} of "${name}" saved to ${job.output_dir}`;
+    $("export-done-text").textContent = `${saved} clip${saved === 1 ? "" : "s"} saved`;  // the folder is in the top bar
+    $("export-done-text").title = `${saved} clip${saved === 1 ? "" : "s"} of "${name}" saved to ${job.output_dir}`;
     $("export-done").classList.remove("hidden");
     toast("Export finished");
   }
@@ -903,13 +990,14 @@ function splitterKey(e) {
     return undo();
   }
   if (e.ctrlKey || e.altKey || e.metaKey) return;
-  const p = sPlayer();
   const actions = {
-    " ": () => (p.paused ? p.play().catch(() => {}) : p.pause()),
+    " ": togglePlay,
     ArrowLeft: () => seekBy(e.shiftKey ? -1 : -5),
     ArrowRight: () => seekBy(e.shiftKey ? 1 : 5),
-    ",": () => { p.pause(); seekBy(-FRAME); },
-    ".": () => { p.pause(); seekBy(FRAME); },
+    ArrowUp: () => gotoCut(-1),
+    ArrowDown: () => gotoCut(1),
+    ",": () => stepFrame(-1),
+    ".": () => stepFrame(1),
     i: setIn,
     o: setOut,
     m: addMarker,
@@ -960,8 +1048,29 @@ sp.addEventListener("loadedmetadata", () => {
   tl.vh = sp.videoHeight;
   renderCrop();
 });
-sp.addEventListener("play", () => requestAnimationFrame(tick));
-sp.addEventListener("pause", () => { tl.playUntil = null; updatePlayhead(); });
+sp.addEventListener("play", () => { requestAnimationFrame(tick); renderPlayState(); });
+sp.addEventListener("pause", () => { tl.playUntil = null; updatePlayhead(); renderPlayState(); });
+sp.addEventListener("volumechange", renderPlayState);
+sp.addEventListener("click", togglePlay);
+const savedVolume = Number(localStorage.getItem(VOLUME_KEY) ?? 1);
+sp.volume = Number.isFinite(savedVolume) ? clamp(savedVolume, 0, 1) : 1;
+renderPlayState();
+
+$("tp-play").addEventListener("click", togglePlay);
+$("tp-back").addEventListener("click", () => stepFrame(-1));
+$("tp-fwd").addEventListener("click", () => stepFrame(1));
+$("tp-prev-cut").addEventListener("click", () => gotoCut(-1));
+$("tp-next-cut").addEventListener("click", () => gotoCut(1));
+$("tp-mute").addEventListener("click", () => {
+  if (sp.muted || sp.volume === 0) {
+    sp.muted = false;
+    if (sp.volume === 0) setVolume(1);
+  } else {
+    sp.muted = true;
+  }
+});
+$("tp-volume").addEventListener("input", (e) => setVolume(Number(e.target.value)));
+$("tp-volume").addEventListener("change", (e) => e.target.blur());  // give the keys back to the player
 sp.addEventListener("seeked", updatePlayhead);
 sp.addEventListener("timeupdate", updatePlayhead);
 sp.addEventListener("error", () => {
@@ -1013,18 +1122,27 @@ $("crop-aspect").addEventListener("click", (e) => {
   const b = e.target.closest("[data-aspect]");
   if (b) setAspect(b.dataset.aspect);
 });
+for (const input of document.querySelectorAll(".crop-fields input")) {
+  // Esc cancels: the change event that blurring fires is ignored, then the field shows the box again.
+  input.addEventListener("change", () => { if (!input.dataset.cancel) onCropField(input); });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") input.blur();
+    if (e.key === "Escape") { input.dataset.cancel = "1"; input.blur(); }
+  });
+  input.addEventListener("blur", () => { delete input.dataset.cancel; renderCrop(); });
+}
 
 $("seg-body").addEventListener("click", (e) => {
-  const tr = e.target.closest("tr");
-  if (!tr) return;
-  const i = Number(tr.dataset.index);
+  const row = e.target.closest(".seg-row");
+  if (!row) return;
+  const i = Number(row.dataset.index);
   const act = e.target.closest("[data-act]");
   if (act && act.dataset.act === "play") return playSegment(i);
   if (act && act.dataset.act === "delete") {
     tl.selected = { kind: "segment", index: i };
     return deleteSelected();
   }
-  if (e.target.closest("input")) return;
+  if (e.target.closest("input, label")) return;  // editing a time; redrawing would drop the focus
   selectItem("segment", i);
   seek(tl.segments[i].start);
 });
