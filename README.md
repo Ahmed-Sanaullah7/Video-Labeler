@@ -1,4 +1,4 @@
-# Video Speaker Labeler
+# Video Speaker Labeler Clipper
 
 A small Windows desktop app for labeling **who speaks first** in each video: the **on-screen** actor or the **off-screen** speaker.
 The label tells the model which diarized audio track belongs to the on-screen actor (diarization tags the first speaker as **A**):
