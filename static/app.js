@@ -92,11 +92,10 @@ function toggleMenu(open) {
 // ---------------------------------------------------------------- screens
 
 const SECTIONS = ["home", "setup", "labeler", "split-setup", "splitter", "downloader"];
-const BRAND = { labeler: "Speaker Labeler", splitter: "Video Splitter", downloader: "Video Downloader" };
 const MODE_KEY = "labeler:mode";
 
 // Show one screen. The modes are the downloader, the splitter (split-setup + splitter)
-// and the labeler (setup + labeler).
+// and the labeler (setup + labeler), switched with the tabs in the top bar.
 function showSection(id) {
   if (id !== "splitter" && !$("splitter").classList.contains("hidden")) splitLeave();
   if (id !== "downloader" && !$("downloader").classList.contains("hidden")) downloadLeave();
@@ -106,7 +105,8 @@ function showSection(id) {
   document.body.classList.toggle("has-split", id === "splitter");
   document.body.classList.toggle("has-download", id === "downloader");
   $("home-btn").classList.toggle("hidden", id === "home");
-  $("brand-name").textContent = BRAND[mode] || BRAND.labeler;
+  $("workspaces").classList.toggle("hidden", id === "home");
+  document.querySelectorAll("[data-workspace]").forEach((b) => b.classList.toggle("active", b.dataset.workspace === mode));
   if (id !== "labeler") $("player").pause();
   if (id !== "splitter") $("split-player").pause();
   if (mode) localStorage.setItem(MODE_KEY, mode);
@@ -177,6 +177,8 @@ async function browse(inputId) {
 async function load() {
   const data = await api("GET", "/api/state");
   if (!data.ready) return showSetup(data);
+  // Back from the splitter to the same project: stay on the video that was open.
+  const back = state && state.project === data.project && current < data.items.length ? current : null;
   state = data;
   showSection("labeler");
 
@@ -196,6 +198,7 @@ async function load() {
   updateCounts(state);
   renderList();
   if (!empty) {
+    if (back !== null) return select(back);
     const done = state.first_unlabeled === null;
     select(done ? 0 : state.first_unlabeled);
     toast(done ? `"${state.project}": all videos are labeled` : `Opened "${state.project}"`);
@@ -365,6 +368,12 @@ async function clearLabel() {
   }
 }
 
+function replay() {
+  const player = $("player");
+  player.currentTime = 0;
+  player.play().catch(() => {});
+}
+
 function jumpUnlabeled() {
   const next = nextUnlabeled(current);
   if (next === null) toast(`All videos in "${state.project}" are labeled`);
@@ -385,6 +394,10 @@ document.querySelectorAll("[data-go-home]").forEach((b) => b.addEventListener("c
 }));
 document.querySelectorAll(".tool[data-mode]").forEach((b) =>
   b.addEventListener("click", () => openMode(b.dataset.mode).catch((e) => toast(e.message, true))));
+document.querySelectorAll("[data-workspace]").forEach((b) => b.addEventListener("click", () => {
+  if (b.classList.contains("active")) return;
+  openMode(b.dataset.workspace).catch((e) => toast(e.message, true));
+}));
 
 $("setup-go").addEventListener("click", submitSetup);
 ["setup-project", "setup-videos", "setup-output"].forEach((id) =>
@@ -436,6 +449,7 @@ $("video-list").addEventListener("click", (e) => {
 
 $("prev").addEventListener("click", () => select(current - 1));
 $("next").addEventListener("click", () => select(current + 1));
+$("replay").addEventListener("click", replay);
 $("clear-label").addEventListener("click", clearLabel);
 $("jump-unlabeled").addEventListener("click", jumpUnlabeled);
 document.querySelectorAll(".choice").forEach((b) => b.addEventListener("click", () => setLabel(b.dataset.label)));
@@ -458,7 +472,7 @@ document.addEventListener("keydown", (e) => {
     "2": () => setLabel("offscreen"),
     "3": () => setLabel("unclear"),
     " ": () => (player.paused ? player.play() : player.pause()),
-    r: () => { player.currentTime = 0; player.play(); },
+    r: replay,
     n: jumpUnlabeled,
   };
   const action = actions[e.key.length === 1 ? e.key.toLowerCase() : e.key];

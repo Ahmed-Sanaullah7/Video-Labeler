@@ -460,7 +460,7 @@ def run_desktop(url: str) -> bool:
         width=1320,
         height=860,
         min_size=(960, 640),
-        background_color="#0e1016" if system_uses_dark_theme() else "#f5f6fa",
+        background_color="#0e0e0e" if system_uses_dark_theme() else "#d4d4d4",
     )
     try:
         # private_mode=False keeps the theme and UI preferences between runs.
