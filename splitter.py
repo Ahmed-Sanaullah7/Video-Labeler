@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import threading
@@ -24,7 +23,7 @@ from pathlib import Path
 
 from flask import Blueprint, abort, jsonify, request, send_from_directory
 
-from common import list_videos, load_config, update_config
+from common import NO_WINDOW, find_ffmpeg, list_videos, load_config, update_config
 
 bp = Blueprint("splitter", __name__, url_prefix="/api/split")
 lock = threading.Lock()
@@ -32,18 +31,6 @@ lock = threading.Lock()
 MANIFEST_NAME = "_splits.json"
 MIN_SEGMENT = 0.2  # seconds
 MIN_CROP = 32  # pixels
-# No console window for ffmpeg: the installed app has no console of its own.
-NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-
-
-def find_ffmpeg() -> str | None:
-    """The ffmpeg bundled with the app (imageio-ffmpeg), else the one on PATH."""
-    try:
-        import imageio_ffmpeg
-
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:  # noqa: BLE001 - not installed or no binary for this platform
-        return shutil.which("ffmpeg")
 
 
 def clip_name(source: str, number: int) -> str:

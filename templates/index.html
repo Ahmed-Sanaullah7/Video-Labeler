@@ -56,6 +56,8 @@
   <symbol id="i-fit" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></symbol>
   <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></symbol>
   <symbol id="i-crop" viewBox="0 0 24 24"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
 </svg>
 
 <!-- ============ Header (always visible) ============ -->
@@ -92,6 +94,7 @@
       <button id="menu-change" class="menu-item project-only" role="menuitem"><svg class="ic"><use href="#i-folder"/></svg><span>Change project…</span></button>
       <button id="menu-split-reveal" class="menu-item split-only" role="menuitem"><svg class="ic"><use href="#i-folder"/></svg><span>Show output folder</span></button>
       <button id="menu-split-change" class="menu-item split-only" role="menuitem"><svg class="ic"><use href="#i-folder"/></svg><span>Change folders…</span></button>
+      <button id="menu-dl-reveal" class="menu-item download-only" role="menuitem"><svg class="ic"><use href="#i-folder"/></svg><span>Show output folder</span></button>
       <div class="menu-sep"></div>
       <div class="menu-foot">Video Speaker Labeler · v{{ version }}</div>
     </div>
@@ -112,16 +115,22 @@
   <div class="home">
     <img class="setup-logo" src="{{ url_for('static', filename='icon.svg') }}" alt="">
     <h1>What do you want to do?</h1>
-    <p class="muted lead">Cut long videos into clips first, then label who speaks first in each clip.</p>
+    <p class="muted lead">Download the videos, cut the long ones into clips, then label who speaks first in each clip.</p>
     <div class="tools">
-      <button class="tool card splitter" data-mode="splitter">
+      <button class="tool card downloader" data-mode="downloader">
         <span class="tool-step">Step 1</span>
+        <span class="tool-icon"><svg class="ic"><use href="#i-download"/></svg></span>
+        <span class="tool-title">Video Downloader</span>
+        <span class="tool-sub">Download every video linked in a spreadsheet, from YouTube and other sites, into one folder.</span>
+      </button>
+      <button class="tool card splitter" data-mode="splitter">
+        <span class="tool-step">Step 2</span>
         <span class="tool-icon"><svg class="ic"><use href="#i-scissors"/></svg></span>
         <span class="tool-title">Video Splitter</span>
         <span class="tool-sub">Mark segments on a timeline and export each one as a clip into your dataset folder.</span>
       </button>
       <button class="tool card labeler" data-mode="labeler">
-        <span class="tool-step">Step 2</span>
+        <span class="tool-step">Step 3</span>
         <span class="tool-icon"><svg class="ic"><use href="#i-tag"/></svg></span>
         <span class="tool-title">Video Labeler</span>
         <span class="tool-sub">Watch each clip and label who speaks first: the on-screen actor or an off-screen voice.</span>
@@ -169,6 +178,176 @@
       <button id="setup-update" class="link-btn"><svg class="ic"><use href="#i-refresh"/></svg><span>Check for updates</span></button>
     </div>
   </div>
+</section>
+
+<!-- ============ Downloader ============ -->
+<section id="downloader" class="app hidden">
+  <aside class="dl-rail">
+    <div class="dl-rail-body">
+      <div class="card dl-card">
+        <div class="dl-section">Source</div>
+        <label class="field">
+          <span class="field-label">Spreadsheet</span>
+          <span class="input-row">
+            <input id="dl-file" type="text" placeholder="D:\data\videos.xlsx" autocomplete="off" spellcheck="false">
+            <button type="button" id="dl-browse" class="btn desktop-only"><svg class="ic"><use href="#i-sheet"/></svg>Browse</button>
+          </span>
+        </label>
+        <label class="field">
+          <span class="field-label">Sheet</span>
+          <select id="dl-sheet" disabled><option value="">—</option></select>
+        </label>
+        <div class="field-pair">
+          <label class="field">
+            <span class="field-label">Link column</span>
+            <select id="dl-url" disabled><option value="">Auto-detect</option></select>
+          </label>
+          <label class="field">
+            <span class="field-label">Name column</span>
+            <select id="dl-name" disabled><option value="">Auto-detect</option></select>
+          </label>
+        </div>
+        <p id="dl-detected" class="dl-hint">Pick an .xlsx or .csv file with a column of video links.</p>
+      </div>
+
+      <div class="card dl-card">
+        <div class="dl-section">Download</div>
+        <label class="field">
+          <span class="field-label">Quality</span>
+          <select id="dl-quality">
+            <option value="best">Best available</option>
+            <option value="2160">2160p · 4K</option>
+            <option value="1440">1440p · 2K</option>
+            <option value="1080">1080p · Full HD</option>
+            <option value="720">720p · HD</option>
+            <option value="480">480p</option>
+            <option value="360">360p</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">Parallel downloads <b id="dl-workers-value" class="dl-value">3</b></span>
+          <input id="dl-workers" type="range" min="1" max="8" step="1" value="3">
+          <span id="dl-workers-hint" class="dl-hint"></span>
+        </label>
+        <label class="switch dl-switch">
+          <input id="dl-h264" type="checkbox"><span class="track"></span>
+          <span class="dl-switch-text">H.264 video<small>Plays in every player and editor</small></span>
+        </label>
+        <label class="switch dl-switch">
+          <input id="dl-playlists" type="checkbox"><span class="track"></span>
+          <span class="dl-switch-text">Follow playlists<small>Otherwise only the linked video</small></span>
+        </label>
+        <details class="dl-advanced">
+          <summary>Advanced settings</summary>
+          <div class="field-pair">
+            <label class="field">
+              <span class="field-label">Attempts</span>
+              <input id="dl-retries" type="number" min="1" max="20" value="3">
+            </label>
+            <label class="field">
+              <span class="field-label">Timeout (s)</span>
+              <input id="dl-timeout" type="number" min="10" max="600" step="10" value="60">
+            </label>
+          </div>
+          <div class="field-pair">
+            <label class="field">
+              <span class="field-label">First N rows</span>
+              <input id="dl-limit" type="number" min="0" value="0" title="0 = all rows">
+            </label>
+            <label class="field">
+              <span class="field-label">Cookies from</span>
+              <select id="dl-cookies">
+                <option value="">Not needed</option>
+                <option value="chrome">Chrome</option>
+                <option value="edge">Edge</option>
+                <option value="firefox">Firefox</option>
+                <option value="brave">Brave</option>
+                <option value="opera">Opera</option>
+                <option value="vivaldi">Vivaldi</option>
+                <option value="chromium">Chromium</option>
+              </select>
+            </label>
+          </div>
+          <p class="dl-hint">First N rows: 0 downloads every row. Browser cookies unlock age-restricted and members-only videos.</p>
+        </details>
+      </div>
+
+      <div class="card dl-card">
+        <div class="dl-section">Destination</div>
+        <label class="field">
+          <span class="field-label">Output folder <span class="opt">optional</span></span>
+          <span class="input-row">
+            <input id="dl-output" type="text" placeholder="Defaults to a downloads folder next to the spreadsheet" autocomplete="off" spellcheck="false">
+            <button type="button" class="btn desktop-only" data-browse="dl-output"><svg class="ic"><use href="#i-folder"/></svg>Browse</button>
+          </span>
+        </label>
+        <p class="dl-hint">Videos already in this folder are skipped, so you can run the sheet again after adding rows.</p>
+      </div>
+    </div>
+    <div class="dl-actions">
+      <button id="dl-start" class="btn primary lg" disabled><svg class="ic"><use href="#i-download"/></svg>Start download</button>
+      <button id="dl-stop" class="btn lg hidden"><svg class="ic"><use href="#i-stop"/></svg>Stop</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="work wide">
+      <div id="dl-alert" class="alert error hidden"></div>
+      <div id="dl-ffmpeg" class="alert warn hidden">ffmpeg wasn't found, so YouTube downloads are capped around 360p. Install ffmpeg and add it to PATH, then restart the app.</div>
+
+      <div class="dl-tiles">
+        <div class="card dl-tile"><b id="dl-n-total">0</b><span>In list</span></div>
+        <div class="card dl-tile ok"><b id="dl-n-downloaded">0</b><span>Downloaded</span></div>
+        <div class="card dl-tile"><b id="dl-n-skipped">0</b><span>Already there</span></div>
+        <div class="card dl-tile bad"><b id="dl-n-failed">0</b><span>Failed</span></div>
+        <div class="card dl-tile accent"><b id="dl-n-data">0 B</b><span>Data</span></div>
+      </div>
+
+      <div class="card dl-progress">
+        <div class="export-text"><span id="dl-progress-title">Ready</span><span id="dl-progress-detail" class="muted"></span></div>
+        <div class="progress dl-bar"><span id="dl-bar-done"></span><span id="dl-bar-failed"></span><span id="dl-bar-active"></span></div>
+      </div>
+
+      <div id="dl-done" class="export-done hidden">
+        <svg class="ic"><use href="#i-check"/></svg><span id="dl-done-text"></span>
+        <button id="dl-open-folder" class="btn sm"><svg class="ic"><use href="#i-folder"/></svg>Open folder</button>
+        <button id="dl-open-report" class="btn sm"><svg class="ic"><use href="#i-sheet"/></svg>Open report</button>
+        <button id="dl-open-splitter" class="btn sm"><svg class="ic"><use href="#i-scissors"/></svg>Open in Splitter</button>
+      </div>
+
+      <div class="card segments">
+        <div class="seg-head">
+          <h2>Videos <span id="dl-count" class="badge">0</span></h2>
+          <div class="search dl-search">
+            <svg class="ic"><use href="#i-search"/></svg>
+            <input id="dl-search" type="search" placeholder="Search names and links" spellcheck="false">
+          </div>
+          <div class="spacer"></div>
+          <div id="dl-filter" class="segmented">
+            <button data-filter="all" class="active">All</button>
+            <button data-filter="active">Active</button>
+            <button data-filter="done">Done</button>
+            <button data-filter="failed">Failed</button>
+          </div>
+        </div>
+        <table class="seg-table dl-table">
+          <thead><tr><th>#</th><th>Video</th><th>Status</th><th>Progress</th><th>Size</th></tr></thead>
+          <tbody id="dl-body"></tbody>
+        </table>
+        <div id="dl-empty" class="list-empty">Pick a spreadsheet to see the videos it links to.</div>
+      </div>
+
+      <div class="card segments">
+        <div class="seg-head">
+          <h2>Activity</h2>
+          <div class="spacer"></div>
+          <button id="dl-log-copy" class="btn ghost sm"><svg class="ic"><use href="#i-copy"/></svg>Copy</button>
+          <button id="dl-log-clear" class="btn ghost sm"><svg class="ic"><use href="#i-eraser"/></svg>Clear</button>
+        </div>
+        <pre id="dl-log" class="dl-log" data-empty="Progress and errors show up here."></pre>
+      </div>
+    </div>
+  </main>
 </section>
 
 <!-- ============ Splitter setup ============ -->
@@ -420,5 +599,6 @@
 
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 <script src="{{ url_for('static', filename='splitter.js') }}"></script>
+<script src="{{ url_for('static', filename='downloader.js') }}"></script>
 </body>
 </html>

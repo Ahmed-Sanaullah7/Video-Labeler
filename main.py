@@ -1,6 +1,7 @@
 """Video Speaker Labeler.
 
-A small desktop app with two tools:
+A small desktop app with three tools:
+- Video Downloader (downloader.py): download the videos linked in a spreadsheet.
 - Video Splitter (splitter.py): cut long videos into clips on a timeline.
 - Video Labeler: label who speaks first in each clip (on-screen or off-screen
   actor). Labels are saved to an Excel file and the session resumes
@@ -40,6 +41,7 @@ try:
     from flask import Flask, abort, jsonify, render_template, request, send_from_directory
     from werkzeug.serving import make_server
 
+    import downloader
     import splitter
 except ImportError:
     start_again_later()  # just after an update the new files can still be locked
@@ -60,6 +62,7 @@ DIARIZED = {"onscreen": "A", "offscreen": "B", "unclear": ""}
 
 app = Flask(__name__, template_folder=str(RESOURCE_DIR / "templates"), static_folder=str(RESOURCE_DIR / "static"))
 app.register_blueprint(splitter.bp)
+app.register_blueprint(downloader.bp)
 lock = threading.Lock()
 window = None  # the pywebview window, when running as a desktop app
 
@@ -225,6 +228,7 @@ def check_update(force: bool = False) -> dict:
 
 def quit_app():
     splitter.cancel_export()  # don't leave ffmpeg running in the background
+    downloader.cancel_download()
     lock.acquire()  # let a label save that is in progress finish first
     os._exit(0)
 
@@ -382,6 +386,17 @@ class DesktopApi:
 
         start = start.strip().strip('"')
         picked = window.create_file_dialog(webview.FileDialog.FOLDER, directory=start if os.path.isdir(start) else "")
+        return picked[0] if picked else None
+
+    def pick_file(self, start: str = "") -> str | None:
+        """Pick a spreadsheet for the downloader."""
+        import webview
+
+        start = start.strip().strip('"')
+        folder = start if os.path.isdir(start) else os.path.dirname(start)
+        picked = window.create_file_dialog(
+            webview.FileDialog.OPEN, directory=folder if os.path.isdir(folder) else "",
+            file_types=("Spreadsheets (*.xlsx;*.xlsm;*.xls;*.csv)", "All files (*.*)"))
         return picked[0] if picked else None
 
     def set_dark_title_bar(self, dark: bool):

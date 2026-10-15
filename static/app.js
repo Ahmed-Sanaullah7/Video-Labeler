@@ -91,23 +91,27 @@ function toggleMenu(open) {
 
 // ---------------------------------------------------------------- screens
 
-const SECTIONS = ["home", "setup", "labeler", "split-setup", "splitter"];
-const BRAND = { labeler: "Speaker Labeler", splitter: "Video Splitter" };
+const SECTIONS = ["home", "setup", "labeler", "split-setup", "splitter", "downloader"];
+const BRAND = { labeler: "Speaker Labeler", splitter: "Video Splitter", downloader: "Video Downloader" };
 const MODE_KEY = "labeler:mode";
 
-// Show one screen. The labeler (setup + labeler) and the splitter (split-setup + splitter) are the two modes.
+// Show one screen. The modes are the downloader, the splitter (split-setup + splitter)
+// and the labeler (setup + labeler).
 function showSection(id) {
   if (id !== "splitter" && !$("splitter").classList.contains("hidden")) splitLeave();
+  if (id !== "downloader" && !$("downloader").classList.contains("hidden")) downloadLeave();
   for (const s of SECTIONS) $(s).classList.toggle("hidden", s !== id);
-  const mode = id === "home" ? null : id.startsWith("split") ? "splitter" : "labeler";
+  const mode = id === "home" ? null : id === "downloader" ? "downloader" : id.startsWith("split") ? "splitter" : "labeler";
   document.body.classList.toggle("has-project", id === "labeler");
   document.body.classList.toggle("has-split", id === "splitter");
+  document.body.classList.toggle("has-download", id === "downloader");
   $("home-btn").classList.toggle("hidden", id === "home");
   $("brand-name").textContent = BRAND[mode] || BRAND.labeler;
   if (id !== "labeler") $("player").pause();
   if (id !== "splitter") $("split-player").pause();
   if (mode) localStorage.setItem(MODE_KEY, mode);
-  if (id !== "labeler" && id !== "splitter") document.title = APP_TITLE;
+  if (id === "downloader") document.title = `Video Downloader · ${APP_TITLE}`;
+  else if (id !== "labeler" && id !== "splitter") document.title = APP_TITLE;
 }
 
 function showHome() {
@@ -117,6 +121,7 @@ function showHome() {
 }
 
 function openMode(mode) {
+  if (mode === "downloader") return loadDownload();
   return mode === "splitter" ? loadSplit() : load();
 }
 

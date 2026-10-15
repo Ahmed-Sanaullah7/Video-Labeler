@@ -9,10 +9,11 @@ The label tells the model which diarized audio track belongs to the on-screen ac
 | Off-screen | **B** |
 | Unclear    | (blank; leave it out of training) |
 
-The app has two tools, picked on the start screen:
+The app has three tools, picked on the start screen:
 
-1. **Video Splitter**: cut long videos (30–50+ min, where the off-screen speaker keeps changing) into short clips, optionally cropped to part of the picture. See [Split long videos](#split-long-videos).
-2. **Video Labeler**: label who speaks first in each clip. See [How to label](#how-to-label).
+1. **Video Downloader**: download every video linked in a spreadsheet (YouTube, other video sites, or direct file links) into one folder. See [Download videos](#download-videos).
+2. **Video Splitter**: cut long videos (30–50+ min, where the off-screen speaker keeps changing) into short clips, optionally cropped to part of the picture. See [Split long videos](#split-long-videos).
+3. **Video Labeler**: label who speaks first in each clip. See [How to label](#how-to-label).
 
 The **⌂** button at the top left goes back to the start screen. An open project stays open, so you can switch between the tools.
 
@@ -41,7 +42,7 @@ pip install -r requirements.txt
 python main.py --videos "D:\data\videos" --project "Batch_01"
 ```
 
-The app opens in its own window. With `--videos`, the labeler opens straight away. You can also run `python main.py` with no arguments, pick a tool on the start screen and fill in the folders there (**Browse** opens a folder picker). The app remembers the last folders you used in each tool.
+The app opens in its own window. With `--videos`, the labeler opens straight away. You can also run `python main.py` with no arguments, pick a tool on the start screen and fill in the folders there (**Browse** opens a folder picker). The app remembers the last folders and settings you used in each tool.
 
 Options:
 
@@ -54,6 +55,25 @@ Options:
 | `--browser` | Open the app in the web browser instead of its own window |
 | `--port N` | Port of the local server (default 5000) |
 | `--host 0.0.0.0` | Let other PCs on the network open the app in their browser at `http://<this-pc>:<port>` |
+
+## Download videos
+
+1. On the start screen, click **Video Downloader**. Pick the spreadsheet (`.xlsx` or `.csv`) with the video links (**Browse** opens a file picker).
+2. The app reads the sheet and lists the links it found. It picks the column with the links, and a column for the file names (e.g. `Name` or `Title`), by itself. To change them, pick the **Sheet**, **Link column** and **Name column** yourself. **Name column → Video title** names each file after the video's own title instead.
+3. Pick the **Quality** (default 1080p) and how many videos download at once (**Parallel downloads**, default 3; YouTube starts throttling above 4). Optional:
+   - **H.264 video**: the most compatible MP4. YouTube otherwise often sends AV1 video, which some players and editors can't open.
+   - **Follow playlists**: for a link to a video in a playlist, download the whole playlist instead of only that video.
+   - **Advanced settings**: attempts and timeout per video, download only the first N rows, and **Cookies from** a browser you're signed in with, for age-restricted or members-only videos.
+4. Pick the **Output folder**, or leave it empty for a `downloads` folder next to the spreadsheet. Click **Start download**. **Stop** ends the run after the chunks that are in flight.
+5. When it's done, **Open in Splitter** opens the Splitter setup with the download folder filled in, to cut the long videos into clips.
+
+Notes:
+
+- **Videos already in the output folder are skipped**, so you can run the same sheet again after adding rows, or to retry the ones that failed.
+- Every run writes `_download_report.csv` (one row per link: status, file, title, runtime, size, error) and adds a summary to `report.txt` in the output folder. **Open report** opens `report.txt`.
+- Links in cells with a label such as "Watch" work too: the app reads the cell's hyperlink. A bare YouTube video ID (11 characters) also works.
+- Videos are saved as MP4. Double-click a downloaded video in the list to play it.
+- Downloads use [yt-dlp](https://github.com/yt-dlp/yt-dlp). If YouTube changes something and downloads start failing, a newer version of the app usually fixes it.
 
 ## Split long videos
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -21,6 +22,18 @@ else:
     CONFIG_FILE = RESOURCE_DIR / ".labeler_config.json"
 VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}
 START_TRIES = 5
+# No console window for ffmpeg: the installed app has no console of its own.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def find_ffmpeg() -> str | None:
+    """The ffmpeg bundled with the app (imageio-ffmpeg), else the one on PATH."""
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:  # noqa: BLE001 - not installed or no binary for this platform
+        return shutil.which("ffmpeg")
 
 
 def start_again_later():
