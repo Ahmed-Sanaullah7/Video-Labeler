@@ -3,10 +3,11 @@
 The user marks segments on a timeline in the app. Each segment is cut out with
 ffmpeg (re-encoded, so cuts are frame-accurate) and saved to the output
 (dataset) folder as <video>_1.mp4, <video>_2.mp4, ... numbered in time order.
+An optional crop box per source video is applied to all of its clips.
 
-Segments, markers and the list of exported clips are kept per source video in
-<output>/_splits.json, so a long video can be split over several sessions and
-every clip can be traced back to its source.
+Segments, markers, the crop and the list of exported clips are kept per source
+video in <output>/_splits.json, so a long video can be split over several
+sessions and every clip can be traced back to its source.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ lock = threading.Lock()
 
 MANIFEST_NAME = "_splits.json"
 MIN_SEGMENT = 0.2  # seconds
+MIN_CROP = 32  # pixels
 # No console window for ffmpeg: the installed app has no console of its own.
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -67,6 +69,20 @@ def clean_segments(raw) -> list[dict]:
     return segments
 
 
+def clean_crop(raw) -> dict | None:
+    """Validate the crop box from the page, in pixels of the source video. None = the full frame."""
+    if not raw:
+        return None
+    x, y, w, h = (int(raw[k]) for k in ("x", "y", "w", "h"))
+    if x < 0 or y < 0:
+        raise ValueError("The crop must be inside the video.")
+    if w < MIN_CROP or h < MIN_CROP:
+        raise ValueError(f"The crop must be at least {MIN_CROP} × {MIN_CROP} pixels.")
+    if w % 2 or h % 2:  # H.264 with yuv420p needs an even width and height
+        raise ValueError("The crop width and height must be even.")
+    return {"x": x, "y": y, "w": w, "h": h}
+
+
 class SplitProject:
     def __init__(self, source_dir: Path, output_dir: Path):
         self.source_dir = source_dir.resolve()
@@ -95,7 +111,8 @@ class SplitProject:
 
     def entry(self, file: str) -> dict:
         e = self.data.get(file, {})
-        return {"segments": e.get("segments", []), "markers": e.get("markers", []), "exported": e.get("exported", [])}
+        return {"segments": e.get("segments", []), "markers": e.get("markers", []), "crop": e.get("crop"),
+                "exported": e.get("exported", [])}
 
     def existing_clips(self, file: str) -> list[str]:
         pattern = clip_pattern(file)
@@ -120,8 +137,8 @@ class SplitProject:
 class ExportJob:
     """Cuts the segments of one video, one after another, in a background thread."""
 
-    def __init__(self, project: SplitProject, file: str, segments: list[dict], ffmpeg: str):
-        self.project, self.file, self.segments, self.ffmpeg = project, file, segments, ffmpeg
+    def __init__(self, project: SplitProject, file: str, segments: list[dict], crop: dict | None, ffmpeg: str):
+        self.project, self.file, self.segments, self.crop, self.ffmpeg = project, file, segments, crop, ffmpeg
         self.total_time = sum(s["end"] - s["start"] for s in segments)
         self.done_time = 0.0
         self.index = 0
@@ -171,11 +188,13 @@ class ExportJob:
         final = self.project.output_dir / name
         part = final.with_name(final.stem + ".part.mp4")
         length = seg["end"] - seg["start"]
+        crop = self.crop
         cmd = [
             self.ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
             # -ss before -i seeks fast; with re-encoding the cut is still frame-accurate.
             "-ss", f"{seg['start']:.3f}", "-i", str(self.project.source_dir / self.file), "-t", f"{length:.3f}",
             "-map", "0:v:0", "-map", "0:a:0?",
+            *(["-vf", f"crop={crop['w']}:{crop['h']}:{crop['x']}:{crop['y']}"] if crop else []),
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
             "-progress", "pipe:1", "-nostats", str(part),
@@ -195,12 +214,13 @@ class ExportJob:
             part.unlink(missing_ok=True)
             if self.cancelled:
                 return
-            raise RuntimeError(f"ffmpeg couldn't cut {name}: {message[-1] if message else f'exit code {code}'}")
+            hint = " Check that the crop fits inside the video." if crop else ""
+            raise RuntimeError(f"ffmpeg couldn't cut {name}: {message[-1] if message else f'exit code {code}'}.{hint}")
         os.replace(part, final)
         with lock:
             entry = self.project.data.setdefault(self.file, {})
             entry.setdefault("exported", []).append({
-                "file": name, "start": seg["start"], "end": seg["end"],
+                "file": name, "start": seg["start"], "end": seg["end"], "crop": self.crop,
                 "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             })
             self.project.save()
@@ -283,11 +303,16 @@ def api_put_segments(file):
     try:
         segments = clean_segments(data.get("segments"))
         markers = sorted(round(float(t), 3) for t in data.get("markers") or [] if float(t) >= 0)
+        crop = clean_crop(data.get("crop"))
     except (KeyError, TypeError, ValueError) as e:
         return error(str(e) or "Invalid segments.")
     with lock:
         entry = project.data.setdefault(file, {})
         entry["segments"], entry["markers"] = segments, markers
+        if crop:
+            entry["crop"] = crop
+        else:
+            entry.pop("crop", None)
         try:
             project.save()
         except OSError as e:
@@ -307,7 +332,8 @@ def api_export():
     if ffmpeg is None:
         return error("ffmpeg wasn't found. Install ffmpeg and add it to PATH, then try again.")
     with lock:
-        segments = project.entry(file)["segments"]
+        entry = project.entry(file)
+        segments = entry["segments"]
         if not segments:
             return error("Add at least one segment first.")
         existing = project.existing_clips(file)
@@ -318,7 +344,7 @@ def api_export():
             (project.output_dir / name).unlink(missing_ok=True)
         project.data.setdefault(file, {})["exported"] = []
         project.save()
-        job = ExportJob(project, file, segments, ffmpeg)
+        job = ExportJob(project, file, segments, entry["crop"], ffmpeg)
     return jsonify({"ok": True})
 
 

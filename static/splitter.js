@@ -8,6 +8,9 @@ const FRAME = 1 / 30;         // step for , and .
 const MIN_VISIBLE = 10;       // seconds visible at the highest zoom
 const TICK_STEPS = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
 const SAVE_TEXT = { saved: "Saved", pending: "Unsaved changes", saving: "Saving…", error: "Not saved" };
+const MIN_CROP = 32;          // pixels, same as splitter.MIN_CROP
+const ASPECT_KEY = "labeler:splitter:cropAspect";
+const ASPECTS = { free: null, "1:1": 1, "9:16": 9 / 16, "16:9": 16 / 9 };  // width / height
 
 let split = null;   // last /api/split/state response (ready)
 let sIndex = 0;     // index into split.items
@@ -16,15 +19,19 @@ const tl = {
   duration: 0,
   segments: [],     // [{start, end}] sorted by start, never overlapping
   markers: [],      // [t] sorted
-  exported: [],     // clips exported from this video: [{file, start, end}]
+  crop: null,       // {x, y, w, h} in pixels of the video, applied to every clip; null = full frame
+  exported: [],     // clips exported from this video: [{file, start, end, crop}]
   clips: [],        // clip files of this video in the output folder
   selected: null,   // {kind: "segment" | "marker", index}
   pendingIn: null,  // start time set with I, waiting for O
   zoom: 1,          // 1 = the whole video fits
   undo: [],
   playUntil: null,  // pause here (playing one segment)
+  vw: 0, vh: 0,     // size of the video in pixels, once it's loaded
+  cropMode: false,  // editing the crop box on the video
 };
 let drag = null;
+let cropDrag = null;
 let openToken = 0;
 let saveTimer = null, savePromise = null, dirty = false;
 let jobTimer = null, jobRunning = false;
@@ -158,10 +165,11 @@ async function openVideo(index) {
   if (token !== openToken) return;  // another video was clicked meanwhile
   sIndex = item.index;
   Object.assign(tl, {
-    file: item.file, duration: 0, segments: entry.segments, markers: entry.markers,
+    file: item.file, duration: 0, segments: entry.segments, markers: entry.markers, crop: entry.crop || null,
     exported: entry.exported, clips: entry.clips,
-    selected: null, pendingIn: null, zoom: 1, undo: [], playUntil: null,
+    selected: null, pendingIn: null, zoom: 1, undo: [], playUntil: null, vw: 0, vh: 0, cropMode: false,
   });
+  cropDrag = null;
   localStorage.setItem(lastVideoKey(), item.file);
   $("split-video-error").classList.add("hidden");
   $("export-done").classList.add("hidden");
@@ -199,7 +207,7 @@ async function flushSave() {
   dirty = false;
   const file = tl.file;
   setSaveBadge("saving");
-  savePromise = api("PUT", `/api/split/segments/${enc(file)}`, { segments: tl.segments, markers: tl.markers });
+  savePromise = api("PUT", `/api/split/segments/${enc(file)}`, { segments: tl.segments, markers: tl.markers, crop: tl.crop });
   try {
     await savePromise;
     const item = split && split.items.find((i) => i.file === file);
@@ -226,7 +234,7 @@ function selectItem(kind, index = null) {
 }
 
 function pushUndo() {
-  tl.undo.push(JSON.stringify({ segments: tl.segments, markers: tl.markers }));
+  tl.undo.push(JSON.stringify({ segments: tl.segments, markers: tl.markers, crop: tl.crop }));
   if (tl.undo.length > 200) tl.undo.shift();
 }
 
@@ -393,6 +401,7 @@ function renderAll() {
   renderTimeline();
   renderSegments();
   renderToolbar();
+  renderCrop();
 }
 
 function renderTimeline() {
@@ -564,13 +573,178 @@ function onPointerUp() {
   else seek(d.t0);  // a click selects the item and moves the playhead there
 }
 
+// ---------------------------------------------------------------- crop
+
+function aspectName() {
+  const name = localStorage.getItem(ASPECT_KEY);
+  return name in ASPECTS ? name : "free";
+}
+
+function aspectRatio() { return ASPECTS[aspectName()]; }
+function cropBox() { return tl.crop || { x: 0, y: 0, w: tl.vw, h: tl.vh }; }
+function isFullFrame(b) { return b.x === 0 && b.y === 0 && b.w >= tl.vw - 1 && b.h >= tl.vh - 1; }
+function sameCrop(a, b) { return a && b ? ["x", "y", "w", "h"].every((k) => a[k] === b[k]) : !a && !b; }
+
+// Round the edges to even pixels (H.264 needs an even width and height) and keep the box in the frame.
+function evenBox(b) {
+  const even = (v) => 2 * Math.round(v / 2);
+  const x = even(b.x), y = even(b.y);
+  const w = clamp(even(b.x + b.w) - x, MIN_CROP, tl.vw - (tl.vw % 2));
+  const h = clamp(even(b.y + b.h) - y, MIN_CROP, tl.vh - (tl.vh % 2));
+  return { x: clamp(x, 0, tl.vw - w), y: clamp(y, 0, tl.vh - h), w, h };
+}
+
+// The box from a fixed corner (ax, ay) to the pointer, in the chosen shape and inside the frame.
+function boxFromCorner(ax, ay, px, py) {
+  let w = Math.abs(px - ax), h = Math.abs(py - ay);
+  const a = aspectRatio();
+  if (a) {
+    if (w < h * a) w = h * a; else h = w / a;
+    const fit = Math.min(1, (px < ax ? ax : tl.vw - ax) / w, (py < ay ? ay : tl.vh - ay) / h);
+    w *= fit;
+    h *= fit;
+  }
+  if (!(w >= MIN_CROP && h >= MIN_CROP)) return null;  // too small, or no room on that side
+  return evenBox({ x: px < ax ? ax - w : ax, y: py < ay ? ay - h : ay, w, h });
+}
+
+function nextCropBox(d, p) {
+  const o = d.orig;
+  if (d.kind === "move") {
+    return evenBox({ ...o, x: clamp(o.x + p.x - d.p0.x, 0, tl.vw - o.w), y: clamp(o.y + p.y - d.p0.y, 0, tl.vh - o.h) });
+  }
+  if (d.kind === "draw") return boxFromCorner(d.p0.x, d.p0.y, p.x, p.y);
+  const edge = d.handle;
+  if (edge.length === 2) {  // a corner: the opposite corner stays put
+    return boxFromCorner(edge.includes("w") ? o.x + o.w : o.x, edge.includes("n") ? o.y + o.h : o.y, p.x, p.y);
+  }
+  const b = { ...o };  // an edge (Free shape only): the other edges stay put
+  if (edge === "w") { b.x = Math.min(p.x, o.x + o.w - MIN_CROP); b.w = o.x + o.w - b.x; }
+  if (edge === "e") b.w = Math.max(p.x - o.x, MIN_CROP);
+  if (edge === "n") { b.y = Math.min(p.y, o.y + o.h - MIN_CROP); b.h = o.y + o.h - b.y; }
+  if (edge === "s") b.h = Math.max(p.y - o.y, MIN_CROP);
+  return evenBox(b);
+}
+
+// Where the picture is drawn in the player; the rest of the <video> is black bars.
+function pictureRect() {
+  const p = sPlayer(), scale = Math.min(p.clientWidth / tl.vw, p.clientHeight / tl.vh);
+  const w = tl.vw * scale, h = tl.vh * scale;
+  return { left: p.offsetLeft + (p.clientWidth - w) / 2, top: p.offsetTop + (p.clientHeight - h) / 2, width: w, height: h };
+}
+
+// Pointer position in pixels of the video, kept inside the frame.
+function videoPoint(e) {
+  const r = $("crop-layer").getBoundingClientRect();
+  return {
+    x: clamp(((e.clientX - r.left) / r.width) * tl.vw, 0, tl.vw),
+    y: clamp(((e.clientY - r.top) / r.height) * tl.vh, 0, tl.vh),
+  };
+}
+
+function renderCrop() {
+  const ready = !!tl.file && tl.vw > 0;
+  if (!ready) tl.cropMode = false;
+  const editing = tl.cropMode, b = cropBox(), layer = $("crop-layer");
+  if (sPlayer().controls === editing) sPlayer().controls = !editing;  // while cropping, the box takes the mouse
+  layer.classList.toggle("hidden", !ready || !(editing || tl.crop));
+  layer.classList.toggle("editing", editing);
+  layer.classList.toggle("locked", !!aspectRatio());
+  layer.classList.toggle("full", !tl.crop);
+  if (ready) {
+    const r = pictureRect();
+    Object.assign(layer.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+    Object.assign($("crop-box").style, {
+      left: `${(100 * b.x) / tl.vw}%`, top: `${(100 * b.y) / tl.vh}%`,
+      width: `${(100 * b.w) / tl.vw}%`, height: `${(100 * b.h) / tl.vh}%`,
+    });
+  }
+  const btn = $("crop-btn");
+  btn.disabled = !ready;
+  btn.classList.toggle("primary", editing);
+  btn.title = editing ? "Finish cropping (C or Esc)" : "Crop the video: every clip of this video is cut to the box (C)";
+  $("crop-btn-text").textContent = editing ? "Done" : "Crop";
+  $("crop-aspect").classList.toggle("hidden", !editing);
+  $("crop-aspect").querySelectorAll("button").forEach((el) => el.classList.toggle("active", el.dataset.aspect === aspectName()));
+  $("crop-reset").classList.toggle("hidden", !editing);
+  $("crop-reset").disabled = !tl.crop;
+  const info = $("crop-info");
+  info.classList.toggle("hidden", !ready || !(editing || tl.crop));
+  info.textContent = !tl.crop ? `Full frame ${tl.vw} × ${tl.vh}`
+    : editing ? `${b.w} × ${b.h} at ${b.x}, ${b.y}` : `Cropped to ${b.w} × ${b.h}`;
+}
+
+function toggleCrop(on = !tl.cropMode) {
+  if (on && !tl.vw) return;
+  tl.cropMode = on;
+  cropDrag = null;
+  renderCrop();
+}
+
+// Pick a shape. The box keeps its centre and about its area, and shrinks if it doesn't fit the frame.
+function setAspect(name) {
+  localStorage.setItem(ASPECT_KEY, name);
+  const a = ASPECTS[name], b = cropBox();
+  if (!a || !tl.vw || Math.abs(b.w / b.h - a) < 0.01) return renderCrop();
+  let h = Math.sqrt((b.w * b.h) / a), w = h * a;
+  const fit = Math.min(1, tl.vw / w, tl.vh / h);
+  w *= fit;
+  h *= fit;
+  pushUndo();
+  const box = evenBox({ x: clamp(b.x + (b.w - w) / 2, 0, tl.vw - w), y: clamp(b.y + (b.h - h) / 2, 0, tl.vh - h), w, h });
+  tl.crop = isFullFrame(box) ? null : box;
+  changed();
+}
+
+function resetCrop() {
+  if (!tl.crop) return;
+  pushUndo();
+  tl.crop = null;
+  changed();
+}
+
+function onCropDown(e) {
+  if (!tl.cropMode || e.button !== 0) return;
+  const handle = e.target.dataset.h;
+  // On the box: move it. Outside it, or when there's no crop yet: draw a new one.
+  const kind = handle ? "resize" : e.target === $("crop-box") && tl.crop ? "move" : "draw";
+  cropDrag = { kind, handle, p0: videoPoint(e), orig: cropBox(), x0: e.clientX, y0: e.clientY, moved: false };
+  $("crop-layer").setPointerCapture(e.pointerId);
+  e.preventDefault();
+}
+
+function onCropMove(e) {
+  if (!cropDrag) return;
+  if (!cropDrag.moved) {
+    if (Math.hypot(e.clientX - cropDrag.x0, e.clientY - cropDrag.y0) < 3) return;  // a click, not a drag (yet)
+    pushUndo();
+    cropDrag.moved = true;
+  }
+  const box = nextCropBox(cropDrag, videoPoint(e));
+  if (box) {
+    tl.crop = box;
+    renderCrop();
+  }
+}
+
+function onCropUp() {
+  if (!cropDrag) return;
+  const d = cropDrag;
+  cropDrag = null;
+  if (!d.moved) return;
+  if (tl.crop && isFullFrame(tl.crop)) tl.crop = null;
+  changed();
+}
+
 // ---------------------------------------------------------------- segment list
 
 function renderSegments() {
   const body = $("seg-body");
   body.innerHTML = "";
   if (!tl.file) return;
-  const done = (s, name) => tl.exported.some((x) => x.file === name && Math.abs(x.start - s.start) < 0.002 && Math.abs(x.end - s.end) < 0.002);
+  const sameTimes = (x, s, name) => x.file === name && Math.abs(x.start - s.start) < 0.002 && Math.abs(x.end - s.end) < 0.002;
+  const done = (s, name) => tl.exported.some((x) => sameTimes(x, s, name) && sameCrop(x.crop, tl.crop));
+  const oldCrop = (s, name) => tl.exported.some((x) => sameTimes(x, s, name));
   tl.segments.forEach((s, i) => {
     const tr = document.createElement("tr");
     tr.dataset.index = i;
@@ -593,6 +767,8 @@ function renderSegments() {
     if (done(s, name)) {
       clip.classList.add("exists");
       clip.title = "Exported";
+    } else if (oldCrop(s, name)) {
+      clip.title = "Exported with a different crop. Export again to update it.";
     }
     body.appendChild(tr);
   });
@@ -717,7 +893,8 @@ function splitterKey(e) {
   if (e.key === "Escape") {
     toggleMenu(false);
     if (typing) return;
-    if (tl.pendingIn !== null) { tl.pendingIn = null; renderAll(); } else if (tl.selected) selectItem(null);
+    if (tl.cropMode) toggleCrop(false);
+    else if (tl.pendingIn !== null) { tl.pendingIn = null; renderAll(); } else if (tl.selected) selectItem(null);
     return;
   }
   if (typing || !tl.file) return;
@@ -736,6 +913,7 @@ function splitterKey(e) {
     i: setIn,
     o: setOut,
     m: addMarker,
+    c: () => toggleCrop(),
     Delete: deleteSelected,
     Backspace: deleteSelected,
     "+": () => setZoom(tl.zoom * 1.5),
@@ -775,6 +953,12 @@ sp.addEventListener("durationchange", () => {
   if (!Number.isFinite(sp.duration) || !tl.file) return;
   tl.duration = sp.duration;
   renderAll();
+});
+sp.addEventListener("loadedmetadata", () => {
+  if (!tl.file) return;
+  tl.vw = sp.videoWidth;
+  tl.vh = sp.videoHeight;
+  renderCrop();
 });
 sp.addEventListener("play", () => requestAnimationFrame(tick));
 sp.addEventListener("pause", () => { tl.playUntil = null; updatePlayhead(); });
@@ -816,6 +1000,19 @@ $("tl-scroll").addEventListener("wheel", (e) => {
 }, { passive: false });
 $("tl-scroll").addEventListener("scroll", renderRuler);
 new ResizeObserver(() => renderTimeline()).observe($("tl-scroll"));
+
+const cropLayer = $("crop-layer");
+cropLayer.addEventListener("pointerdown", onCropDown);
+cropLayer.addEventListener("pointermove", onCropMove);
+cropLayer.addEventListener("pointerup", onCropUp);
+cropLayer.addEventListener("pointercancel", onCropUp);
+new ResizeObserver(() => renderCrop()).observe(sp);
+$("crop-btn").addEventListener("click", () => toggleCrop());
+$("crop-reset").addEventListener("click", resetCrop);
+$("crop-aspect").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-aspect]");
+  if (b) setAspect(b.dataset.aspect);
+});
 
 $("seg-body").addEventListener("click", (e) => {
   const tr = e.target.closest("tr");
