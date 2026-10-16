@@ -421,6 +421,78 @@ def api_reveal():
     return jsonify({"ok": True})
 
 
+# ---------------------------------------------------------------- home: recent folders
+
+
+def recent_folders(cfg: dict) -> list[dict]:
+    """The folder each tool last worked in, as the home screen lists them (tool, name, folder)."""
+    found = []
+    output = cfg.get("download_output") or (str(downloader.default_output(cfg["download_file"])) if cfg.get("download_file") else "")
+    if output and Path(output).is_dir():
+        found.append({"tool": "downloader", "name": Path(output).name, "folder": str(Path(output))})
+    if cfg.get("split_output") and Path(cfg["split_output"]).is_dir():
+        found.append({"tool": "splitter", "name": Path(cfg.get("split_source") or cfg["split_output"]).name,
+                      "folder": cfg["split_output"], "source": cfg.get("split_source", "")})
+    if cfg.get("videos") and Path(cfg["videos"]).is_dir():
+        found.append({"tool": "labeler", "name": cfg.get("project") or Path(cfg["videos"]).name, "folder": cfg["videos"],
+                      "project": cfg.get("project", ""), "output": cfg.get("output", "")})
+    return found
+
+
+def label_summary(item: dict) -> dict:
+    """How far a labeler project is, read from its labels file (nothing is opened or changed)."""
+    videos_dir = Path(item["folder"])
+    output_dir = Path(item["output"]) if item["output"] else videos_dir.parent / "output"
+    labels_file = output_dir / f"{safe_filename(item['name'])}_labels.xlsx"
+    videos = set(list_videos(videos_dir))
+    labeled = 0
+    if labels_file.is_file():
+        df = pd.read_excel(labels_file, dtype=str).fillna("")
+        labeled = sum(1 for rec in df.to_dict("records")
+                      if (rec.get("Video_File") or rec.get("Video_Name")) in videos and rec.get("First_Speaker") in LABELS)
+    return {"videos": len(videos), "labeled": labeled,
+            "updated": (labels_file if labels_file.is_file() else videos_dir).stat().st_mtime}
+
+
+@app.get("/api/home")
+def api_home():
+    """The home screen's recent folders, with what's in them, and the free space where the dataset lives."""
+    recent = []
+    for item in recent_folders(load_config()):
+        try:
+            if item["tool"] == "downloader":
+                item.update(downloader.engine.folder_summary(Path(item["folder"])))
+            elif item["tool"] == "splitter":
+                item.update(splitter.folder_summary(Path(item["source"]), Path(item["folder"])))
+            else:
+                item.update(label_summary(item))
+        except Exception:  # noqa: BLE001 - one unreadable folder must not hide the others
+            continue
+        recent.append(item)
+    disk = None
+    for item in recent:
+        try:
+            usage = shutil.disk_usage(item["folder"])
+            disk = {"free": usage.free, "total": usage.total, "drive": Path(item["folder"]).drive}
+            break
+        except OSError:
+            continue
+    return jsonify({"recent": recent, "disk": disk})
+
+
+@app.post("/api/reveal-recent")
+def api_reveal_recent():
+    """Open one of the home screen's recent folders in Explorer (only folders the app remembers)."""
+    if request.remote_addr not in ("127.0.0.1", "::1"):
+        abort(400)
+    tool = request.get_json(force=True).get("tool")
+    item = next((r for r in recent_folders(load_config()) if r["tool"] == tool), None)
+    if item is None:
+        abort(404)
+    os.startfile(item["folder"])
+    return jsonify({"ok": True})
+
+
 @app.get("/video/<path:file>")
 def video(file):
     if project is None or file not in project.videos:

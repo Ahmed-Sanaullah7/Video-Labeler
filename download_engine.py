@@ -1214,6 +1214,22 @@ def license_group(license_text: str | None) -> str:
     return "Other license"
 
 
+def folder_summary(folder: Path) -> dict:
+    """A quick look at a download folder for the home screen: only what's recorded, nothing measured."""
+    files = read_index(folder)
+    report = read_previous_report(folder)
+    videos = [path for path in folder.iterdir() if is_finished_video(path)]
+    seconds = 0.0
+    for path in videos:
+        seconds += files.get(path.name, {}).get("duration") or report.get(path.name, (0.0,))[0] or 0.0
+    return {
+        "videos": len(videos),
+        "bytes": sum(file_size(path) for path in videos),
+        "seconds": seconds,
+        "updated": max((path.stat().st_mtime for path in videos), default=folder.stat().st_mtime),
+    }
+
+
 def folder_overview(folder: Path, ffmpeg: str | None = None) -> dict:
     """Everything in a download folder, across every run: videos, hours, size, licenses, channels.
 

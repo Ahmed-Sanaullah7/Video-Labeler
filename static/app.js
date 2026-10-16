@@ -187,8 +187,110 @@ function showSection(id) {
 
 function showHome() {
   showSection("home");
-  const last = localStorage.getItem(MODE_KEY) || "splitter";
-  document.querySelector(`.tool[data-mode="${last}"]`).focus();
+  loadHome().catch(() => {});
+}
+
+// ---------------------------------------------------------------- home: recent folders
+
+const RECENT = {
+  downloader: { step: "Step 1 · Download", go: "Open" },
+  splitter: { step: "Step 2 · Split", go: "Resume" },
+  labeler: { step: "Step 3 · Label", go: "Resume" },
+};
+
+// "12 min ago", "3 hours ago", "Yesterday", or the date.
+function timeAgo(epochSeconds) {
+  const s = Date.now() / 1000 - epochSeconds;
+  if (s < 60) return "Just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} hour${s < 7200 ? "" : "s"} ago`;
+  if (s < 172800) return "Yesterday";
+  return new Date(epochSeconds * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
+
+function recentContents(r) {
+  const n = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
+  if (r.tool === "downloader") {
+    return [n(r.videos, "video"), humanSize(r.bytes), r.seconds ? fmtLength(r.seconds) : ""].filter(Boolean).join(" · ");
+  }
+  if (r.tool === "splitter") {
+    return [n(r.clips, "clip"), r.clips ? fmtLength(r.seconds) : "", r.planned ? `${r.planned} to export` : ""]
+      .filter(Boolean).join(" · ");
+  }
+  return `${r.labeled} / ${r.videos} labeled`;
+}
+
+// The folder each tool last worked in, with what's in it, and the free space on the dataset's drive.
+async function loadHome() {
+  const data = await api("GET", "/api/home");
+  const body = $("home-recent-body");
+  body.replaceChildren();
+  for (const r of data.recent) {
+    const tr = document.createElement("tr");
+    tr.className = r.tool;
+    tr.title = r.source ? `${r.source}  →  ${r.folder}` : r.folder;
+    const cell = (cls, text) => {
+      const td = document.createElement("td");
+      if (cls) td.className = cls;
+      if (text !== undefined) td.textContent = text;
+      tr.append(td);
+      return td;
+    };
+    const name = document.createElement("span");
+    name.className = "recent-name";
+    name.append(document.createElement("i"), r.name);
+    cell().append(name);
+    const stage = document.createElement("span");
+    stage.className = "recent-stage";
+    stage.textContent = RECENT[r.tool].step + (r.tool === "labeler" && r.videos ? ` (${Math.round((100 * r.labeled) / r.videos)}%)` : "");
+    cell().append(stage);
+    cell("recent-count", recentContents(r));
+    cell("recent-time", timeAgo(r.updated));
+    const actions = cell("recent-actions actions");
+    for (const [cls, text, run] of [["go", RECENT[r.tool].go, () => openRecent(r)],
+                                     ["folder", "Folder", () => api("POST", "/api/reveal-recent", { tool: r.tool })]]) {
+      const b = document.createElement("button");
+      b.className = cls;
+      b.textContent = text;
+      b.addEventListener("click", () => run().catch((e) => toast(e.message, true)));
+      actions.append(b);
+    }
+    body.append(tr);
+  }
+  $("home-recent").classList.toggle("hidden", !data.recent.length);
+  $("home-recent-count").textContent = `${data.recent.length} of 3 tools`;
+  const disk = data.disk;
+  $("home-disk").classList.toggle("hidden", !disk);
+  $("home-disk-sep").classList.toggle("hidden", !disk);
+  if (disk) {
+    $("home-disk").innerHTML = "";
+    const label = document.createElement("span");
+    label.className = "dim";
+    label.textContent = `Disk ${disk.drive}`;
+    $("home-disk").append(label, ` ${humanSize(disk.free)} free of ${humanSize(disk.total)}`);
+  }
+}
+
+// Go back to a recent folder: the downloader with its settings, the splitter and labeler with their folders opened.
+async function openRecent(r) {
+  if (r.tool === "downloader") return openMode("downloader");
+  if (r.tool === "splitter") {
+    try {
+      await api("POST", "/api/split/setup", { source: r.source, output: r.folder });
+    } catch (_) { /* e.g. an export still running: open the splitter as it is */ }
+    return loadSplit();
+  }
+  if (state) return openMode("labeler");  // already open: keep the clip you were on
+  await api("POST", "/api/setup", { project: r.project, videos: r.folder, output: r.output });
+  return load();
+}
+
+function renderUpdateState(info) {
+  const el = $("home-update-state");
+  el.classList.toggle("hidden", !!info.error);
+  if (info.error) return;
+  el.className = `status-pill ${info.available ? "new" : "ok"}`;
+  el.textContent = info.available ? `● ${info.latest} available` : "● Up to date";
 }
 
 function openMode(mode) {
@@ -470,7 +572,7 @@ document.querySelectorAll("[data-go-home]").forEach((b) => b.addEventListener("c
   e.preventDefault();
   showHome();
 }));
-document.querySelectorAll(".tool[data-mode]").forEach((b) =>
+document.querySelectorAll("#home [data-mode]").forEach((b) =>  // the step cards and the 1 › 2 › 3 links
   b.addEventListener("click", () => openMode(b.dataset.mode).catch((e) => toast(e.message, true))));
 document.querySelectorAll("[data-workspace]").forEach((b) => b.addEventListener("click", () => {
   if (b.classList.contains("active")) return;
@@ -587,6 +689,7 @@ async function checkUpdate(manual = false) {
   } finally {
     buttons.forEach((b) => { b.disabled = false; b.lastElementChild.textContent = "Check for updates"; });
   }
+  renderUpdateState(info);
   if (!manual) {
     if (info.available && sessionStorage.getItem("updateDismissed") !== info.latest) showUpdateBanner(info);
     return;

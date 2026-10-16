@@ -66,6 +66,7 @@
   <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></symbol>
   <symbol id="i-crop" viewBox="0 0 24 24"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></symbol>
   <symbol id="i-stop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></symbol>
+  <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol>
   <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
 </svg>
@@ -126,36 +127,73 @@
 </div>
 
 <!-- ============ Home: pick a tool ============ -->
-<section id="home" class="setup hidden">
-  <div class="home">
-    <img class="setup-logo" src="{{ url_for('static', filename='icon.svg') }}" alt="">
-    <h1>What do you want to do?</h1>
-    <p class="muted lead">Download the videos, cut the long ones into clips, then label who speaks first in each clip.</p>
-    <div class="tools">
-      <button class="tool downloader" data-mode="downloader">
-        <span class="tool-step">Step 1</span>
-        <span class="tool-icon"><svg class="ic"><use href="#i-download"/></svg></span>
-        <span class="tool-title">Video Downloader</span>
-        <span class="tool-sub">Download every video linked in a spreadsheet, from YouTube and other sites, into one folder.</span>
-      </button>
-      <button class="tool splitter" data-mode="splitter">
-        <span class="tool-step">Step 2</span>
-        <span class="tool-icon"><svg class="ic"><use href="#i-scissors"/></svg></span>
-        <span class="tool-title">Video Splitter</span>
-        <span class="tool-sub">Mark segments on a timeline, crop the picture and export each segment as a clip into your dataset folder.</span>
-      </button>
-      <button class="tool labeler" data-mode="labeler">
-        <span class="tool-step">Step 3</span>
-        <span class="tool-icon"><svg class="ic"><use href="#i-tag"/></svg></span>
-        <span class="tool-title">Video Labeler</span>
-        <span class="tool-sub">Watch each clip and label who speaks first: the on-screen actor or an off-screen voice.</span>
-      </button>
-    </div>
-    <div class="setup-foot">
-      <span>Version {{ version }}</span>
-      <button id="home-update" class="link-btn"><svg class="ic"><use href="#i-refresh"/></svg><span>Check for updates</span></button>
+<section id="home" class="home-screen hidden">
+  <div class="home-scroll">
+    <div class="home">
+      <header class="home-hero">
+        <div class="hero-logo"><img src="{{ url_for('static', filename='icon.svg') }}" alt=""></div>
+        <h1>What do you want to do?</h1>
+        <p class="lead">Build your audio-visual training set: download the videos, cut them into frame-accurate clips, then label who speaks first, the actor on screen or a voice off screen.</p>
+        <nav class="home-steps" aria-label="Steps">
+          <button class="step-link downloader" data-mode="downloader"><i></i>1. Download</button>
+          <svg class="ic"><use href="#i-right"/></svg>
+          <button class="step-link splitter" data-mode="splitter"><i></i>2. Split</button>
+          <svg class="ic"><use href="#i-right"/></svg>
+          <button class="step-link labeler" data-mode="labeler"><i></i>3. Label</button>
+        </nav>
+      </header>
+
+      <div class="tools">
+        <button class="tool downloader" data-mode="downloader">
+          <span class="tool-head"><span class="tool-icon"><svg class="ic"><use href="#i-download"/></svg></span><span class="tool-step">Step 1</span></span>
+          <span class="tool-title">Video Downloader</span>
+          <span class="tool-sub">Download every video from a spreadsheet, pasted links, a whole channel or keyword searches, on YouTube, TikTok, Vimeo and many more sites, straight into your dataset folder.</span>
+          <span class="tool-badge"><svg class="ic"><use href="#i-sheet"/></svg>Sheets · links · channels · searches</span>
+          <span class="tool-cta">Import &amp; Download Videos<svg class="ic"><use href="#i-arrow-right"/></svg></span>
+        </button>
+        <button class="tool splitter" data-mode="splitter">
+          <span class="tool-head"><span class="tool-icon"><svg class="ic"><use href="#i-scissors"/></svg></span><span class="tool-step">Step 2</span></span>
+          <span class="tool-title">Video Splitter</span>
+          <span class="tool-sub">Mark segments on a timeline, crop the picture to the speaker and export frame-accurate clips into your dataset folder.</span>
+          <span class="tool-badge"><svg class="ic"><use href="#i-crop"/></svg>Frame-accurate cuts · crop · stats</span>
+          <span class="tool-cta">Open Timeline Editor<svg class="ic"><use href="#i-arrow-right"/></svg></span>
+        </button>
+        <button class="tool labeler" data-mode="labeler">
+          <span class="tool-head"><span class="tool-icon"><svg class="ic"><use href="#i-tag"/></svg></span><span class="tool-step">Step 3</span></span>
+          <span class="tool-title">Video Labeler</span>
+          <span class="tool-sub">Watch each clip and label who speaks first: the actor on screen, or a voice off screen. Labels are saved to Excel as you go.</span>
+          <span class="tool-badge"><svg class="ic"><use href="#i-check"/></svg>On-screen · off-screen · unclear</span>
+          <span class="tool-cta">Start Labeling<svg class="ic"><use href="#i-arrow-right"/></svg></span>
+        </button>
+      </div>
+
+      <section id="home-recent" class="home-recent hidden">
+        <div class="recent-head">
+          <h2>Recent folders</h2>
+          <span id="home-recent-count" class="chip"></span>
+        </div>
+        <div class="recent-table-wrap">
+          <table class="recent-table">
+            <thead><tr><th>Folder</th><th>Step</th><th>Contents</th><th>Last activity</th><th class="actions">Actions</th></tr></thead>
+            <tbody id="home-recent-body"></tbody>
+          </table>
+        </div>
+      </section>
     </div>
   </div>
+
+  <footer class="home-status">
+    <span>Version {{ version }}</span>
+    <span class="sep"></span>
+    <button id="home-update" class="status-btn"><svg class="ic"><use href="#i-refresh"/></svg><span>Check for updates</span></button>
+    <span id="home-update-state" class="status-pill hidden"></span>
+    <div class="spacer"></div>
+    <span id="home-disk" class="hidden"></span>
+    <span id="home-disk-sep" class="sep hidden"></span>
+    <span><span class="dim">Clips:</span> MP4 · H.264/AAC</span>
+    <span class="sep"></span>
+    <a href="https://github.com/iqrarwaqas/Video-Labeler#readme" target="_blank" rel="noopener">Documentation ↗</a>
+  </footer>
 </section>
 
 <!-- ============ Setup screen ============ -->

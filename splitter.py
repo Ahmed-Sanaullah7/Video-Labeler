@@ -398,6 +398,30 @@ def same_clip(exported: dict, segment: dict, crop: dict | None) -> bool:
             and (exported.get("crop") or None) == (crop or None))
 
 
+def folder_summary(source_dir: Path, output_dir: Path) -> dict:
+    """A quick look at a splitter project for the home screen, from its _splits.json."""
+    manifest = output_dir / MANIFEST_NAME
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    clips = planned = 0
+    seconds = 0.0
+    for entry in data.values():
+        exported = [x for x in entry.get("exported", []) if (output_dir / x["file"]).is_file()]
+        clips += len(exported)
+        seconds += sum(x["end"] - x["start"] for x in exported)
+        planned += sum(1 for s in entry.get("segments", [])
+                       if not any(same_clip(x, s, entry.get("crop")) for x in exported))
+    return {
+        "videos": len(list_videos(source_dir)) if source_dir.is_dir() else 0,
+        "clips": clips,
+        "seconds": seconds,
+        "planned": planned,
+        "updated": (manifest if manifest.exists() else output_dir).stat().st_mtime,
+    }
+
+
 @bp.get("/overview")
 def api_overview():
     """The whole dataset: source videos and their hours, the clips and their hours, what's left to export."""
