@@ -281,7 +281,7 @@
             <span class="field-label">Channel or profile link</span>
             <input id="dl-channel" type="text" placeholder="https://www.youtube.com/@name" autocomplete="off" spellcheck="false">
           </label>
-          <p class="dl-hint">A YouTube channel, or a profile or channel on TikTok, Vimeo, Twitch, Dailymotion, Rumble and more. A playlist link works too.</p>
+          <p class="dl-hint">A YouTube channel, or a profile or channel on Vimeo, Twitch, Dailymotion, Rumble and more. A playlist link works too. For a TikTok profile, paste the link of any one of its videos.</p>
           <div class="field">
             <span class="field-label">Include <span class="opt">YouTube</span></span>
             <div id="dl-tabs" class="dl-checks">
@@ -315,7 +315,22 @@
 
       <div class="dl-card">
         <div class="dl-section">Download</div>
-        <label class="field">
+        <div class="field">
+          <span class="field-label">Save as</span>
+          <div id="dl-media" class="segmented full sm">
+            <button data-media="video" class="active" title="The video, with its sound"><svg class="ic"><use href="#i-video"/></svg>Video</button>
+            <button data-media="audio" title="Only the sound, from any site: YouTube, TikTok, Facebook…"><svg class="ic"><use href="#i-volume"/></svg>Audio only</button>
+          </div>
+        </div>
+        <label class="field dl-audio-only hidden">
+          <span class="field-label">Audio format</span>
+          <select id="dl-audio-format">
+            <option value="m4a">M4A · as the site serves it</option>
+            <option value="mp3">MP3 · 192 kbps</option>
+            <option value="wav">WAV · uncompressed</option>
+          </select>
+        </label>
+        <label class="field dl-video-only">
           <span class="field-label">Quality</span>
           <select id="dl-quality">
             <option value="best">Best available</option>
@@ -332,7 +347,7 @@
           <input id="dl-workers" type="range" min="1" max="8" step="1" value="3">
           <span id="dl-workers-hint" class="dl-hint"></span>
         </label>
-        <label class="switch dl-switch">
+        <label class="switch dl-switch dl-video-only">
           <input id="dl-h264" type="checkbox"><span class="track"></span>
           <span class="dl-switch-text">H.264 video<small>Plays in every player and editor</small></span>
         </label>

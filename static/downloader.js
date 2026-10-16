@@ -116,7 +116,19 @@ function dlOptions() {
     h264: $("dl-h264").checked, playlists: $("dl-playlists").checked,
     cookies: $("dl-cookies").value, limit: Number($("dl-limit").value) || 0,
     reuse_only: $("dl-reuse").checked,
+    media: currentMedia(), audio_format: $("dl-audio-format").value,
   };
+}
+
+function currentMedia() {
+  return document.querySelector("#dl-media button.active")?.dataset.media || "video";
+}
+
+// Video, or only the sound: quality and H.264 only mean something for a video.
+function setMedia(media) {
+  document.querySelectorAll("#dl-media button").forEach((b) => b.classList.toggle("active", b.dataset.media === media));
+  document.querySelectorAll("#downloader .dl-video-only").forEach((el) => el.classList.toggle("hidden", media === "audio"));
+  document.querySelectorAll("#downloader .dl-audio-only").forEach((el) => el.classList.toggle("hidden", media !== "audio"));
 }
 
 const blankRow = (r) => ({ ...r, status: "queued", done: 0, total: 0, speed: 0, size: 0, duration: 0, detail: "",
@@ -172,6 +184,8 @@ async function loadDownload() {
     $("dl-retries").value = o.retries;
     $("dl-timeout").value = o.timeout;
     $("dl-h264").checked = o.h264;
+    $("dl-audio-format").value = o.audio_format || "m4a";
+    setMedia(o.media || "video");
     $("dl-playlists").checked = o.playlists;
     $("dl-cookies").value = o.cookies;
     $("dl-limit").value = o.limit;
@@ -611,12 +625,12 @@ function finishDownload(job, live) {
     bytes += r.size || 0;
     seconds += r.duration || 0;
   }
-  let text = `${plural(onDisk, "video")} in ${job.folder}`;
+  let text = `${plural(onDisk, job.audio ? "audio file" : "video")} in ${job.folder}`;
   if (bytes) text += ` · ${humanSize(bytes)}`;
-  if (seconds) text += ` · ${fmtDuration(seconds)} of video`;
+  if (seconds) text += ` · ${fmtDuration(seconds)} of ${job.audio ? "audio" : "video"}`;
   $("dl-done-text").textContent = text;
   $("dl-open-report").classList.toggle("hidden", !s.report);
-  $("dl-open-splitter").classList.toggle("hidden", !onDisk);
+  $("dl-open-splitter").classList.toggle("hidden", !onDisk || !!job.audio);  // the splitter cuts videos
   $("dl-done").classList.remove("hidden");
   if (c.failed) {
     dlAlert(`${plural(c.failed, "video")} couldn't be downloaded. Retry failed tries them again; `
@@ -642,21 +656,28 @@ async function loadDataset() {
   }
   $("dl-ds-folder").textContent = o.folder;
   $("dl-ds-folder").title = o.folder;
-  if (!o.videos) return datasetMessage(el, "No videos in this folder yet.");
+  if (!o.files) return datasetMessage(el, "No videos or audio in this folder yet.");
   const n = (count, seconds) => `${count} · ${fmtLength(seconds)}`;
+  // The first tile counts what the folder holds: videos, audio files, or both.
+  const count = !o.audio ? [String(o.videos), "Videos"]
+    : !o.videos ? [String(o.audio), "Audio files"]
+    : [String(o.files), "Files", `${plural(o.videos, "video")} and ${plural(o.audio, "audio file")}`];
   const notes = [];
   if (o.licenses.some((g) => g.name === "Not recorded")) {
     notes.push("Not recorded: downloaded before the app kept licenses, or put in the folder by hand.");
   }
-  if (o.unmeasured) notes.push(`${plural(o.unmeasured, "video")} couldn't be measured, so the hours leave them out.`);
+  if (o.unmeasured) notes.push(`${plural(o.unmeasured, "file")} couldn't be measured, so the hours leave them out.`);
   renderDataset(el, [
-    [String(o.videos), "Videos"],
+    count,
     [fmtLength(o.seconds), "Total length", fmtLong(o.seconds), "accent"],
     [humanSize(o.bytes), "Size"],
     [fmtLength(o.average), "Avg length", `Average: ${fmtLong(o.average)}`],
-    [String(o.reuse_videos), "Reuse-allowed", `${fmtLong(o.reuse_seconds)} of CC BY, CC BY-SA or CC0 video`, "ok"],
+    [String(o.reuse_videos), "Reuse-allowed", `${fmtLong(o.reuse_seconds)} licensed CC BY, CC BY-SA or CC0`, "ok"],
     [String(o.channel_count), "Channels"],
   ], [
+    { title: "Type", rows: o.videos && o.audio
+      ? o.kinds.map((g) => ({ label: g.name, value: g.seconds || g.count, text: n(g.count, g.seconds), title: fmtLong(g.seconds) }))
+      : [] },
     { title: "Licenses", rows: o.licenses.map((g) => ({
       label: g.name, value: g.seconds || g.count, text: n(g.count, g.seconds), title: fmtLong(g.seconds),
       cls: g.reuse ? "ok" : g.name === "Not recorded" ? "dim" : "warn",
@@ -733,6 +754,10 @@ $("dl-output").addEventListener("change", () => {
   if (panelView($("dl-views")) === "dataset") loadDataset().catch(() => {});
 });
 $("dl-workers").addEventListener("input", renderWorkers);
+$("dl-media").addEventListener("click", (e) => {
+  const button = e.target.closest("button");
+  if (button && !dl.running) setMedia(button.dataset.media);
+});
 $("dl-start").addEventListener("click", () => startDownload().catch((e) => dlAlert(e.message)));
 $("dl-resume").addEventListener("click", () => startDownload(rowsWith("queued", "cancelled")).catch((e) => dlAlert(e.message)));
 $("dl-retry").addEventListener("click", () => startDownload(rowsWith("failed")).catch((e) => dlAlert(e.message)));

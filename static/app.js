@@ -211,7 +211,8 @@ function timeAgo(epochSeconds) {
 function recentContents(r) {
   const n = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
   if (r.tool === "downloader") {
-    return [n(r.videos, "video"), humanSize(r.bytes), r.seconds ? fmtLength(r.seconds) : ""].filter(Boolean).join(" · ");
+    const files = [r.videos || !r.audio ? n(r.videos, "video") : "", r.audio ? n(r.audio, "audio file") : ""];
+    return [...files, humanSize(r.bytes), r.seconds ? fmtLength(r.seconds) : ""].filter(Boolean).join(" · ");
   }
   if (r.tool === "splitter") {
     return [n(r.clips, "clip"), r.clips ? fmtLength(r.seconds) : "", r.planned ? `${r.planned} to export` : ""]

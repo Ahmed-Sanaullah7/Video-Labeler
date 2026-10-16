@@ -42,6 +42,17 @@ VIDEO_EXTENSIONS = {
     ".mp4", ".m4v", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv",
     ".mpg", ".mpeg", ".3gp", ".ts", ".ogv",
 }
+AUDIO_EXTENSIONS = {".m4a", ".mp3", ".wav", ".aac", ".opus", ".ogg", ".oga", ".flac", ".weba"}
+# "Audio only" saves one of these, converted by ffmpeg where the site serves another.
+AUDIO_FORMATS = ("m4a", "mp3", "wav")
+# Audio is fetched and converted in here, then moved up into the folder. Fetching
+# straight into the folder could hit a video of the same name from a video run,
+# and yt-dlp deletes what it took the audio from.
+AUDIO_WORK = "_audio_parts"
+# HEVC (H.265): TikTok's default, and something the app's player (like plenty of
+# editors) can only show where Windows has an HEVC decoder. "?" lets formats
+# whose codec the site doesn't name through.
+NOT_HEVC = "".join(f"[vcodec!^=?{codec}]" for codec in ("hvc1", "hev1", "h265", "hevc"))
 
 URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -86,6 +97,9 @@ YOUTUBE_CC_FILTER = "EgIwAQ=="
 # Channel tabs that hold videos, by their URL path.
 CHANNEL_TABS = {"videos": "Videos", "streams": "Live", "shorts": "Shorts"}
 YOUTUBE_LICENSE = "Creative Commons Attribution license (reuse allowed)"
+# A TikTok profile link, and the profile id every TikTok video names ("secUid").
+TIKTOK_PROFILE_RE = re.compile(r"tiktok\.com/@[\w.-]+/?(?:$|[?#])", re.IGNORECASE)
+TIKTOK_PROFILE_ID_RE = re.compile(r"MS4wLjABAAAA[\w-]{64}")
 
 
 class JobError(RuntimeError):
@@ -142,7 +156,9 @@ class EventLogger:
     """
 
     # yt-dlp routes its progress redraws through debug(); we already draw those.
-    NOISE = ("[debug] ", "[download] ")
+    # Audio leaves "Deleting original file ... (pass -k to keep)": the video it took
+    # the sound from, in the work folder, with advice for yt-dlp's command line.
+    NOISE = ("[debug] ", "[download] ", "Deleting original file ")
 
     def __init__(self, events: Events, row_number: int) -> None:
         self.events = events
@@ -431,14 +447,46 @@ def add_entries(rows: list[VideoRow], seen: set[str], entries: list[dict], video
         added += 1
 
 
+def tiktok_profile(url: str, spec: JobSpec) -> tuple[str, str, str] | None:
+    """The profile a TikTok video was posted on: ("tiktokuser:<id>", @handle, name).
+
+    yt-dlp can no longer read TikTok's profile pages (TikTok blocks them), but
+    every video names its profile's id, and a profile can still be listed by id.
+    None for anything that isn't a TikTok video, or a video that can't be read.
+    """
+    if not is_tiktok(url) or TIKTOK_PROFILE_RE.search(url):
+        return None
+    settings = {"skip_download": True, "socket_timeout": spec.timeout, "quiet": True,
+                "no_warnings": True, "logger": QuietLogger()}
+    if spec.cookies_from_browser:
+        settings["cookiesfrombrowser"] = (spec.cookies_from_browser,)
+    if spec.cookies_file:
+        settings["cookiefile"] = str(spec.cookies_file)
+    try:
+        with YoutubeDL(settings) as reader:
+            info = reader.extract_info(url, download=False)
+    except DownloadError:
+        return None
+    profile = info.get("channel_id") or ""
+    if not TIKTOK_PROFILE_ID_RE.fullmatch(profile):
+        return None
+    handle = info.get("uploader") or ""
+    return f"tiktokuser:{profile}", handle, info.get("channel") or handle
+
+
 def list_channel(spec: JobSpec) -> Scan:
     """Every video on a channel, newest first: its Videos tab, plus Live and Shorts if asked.
 
     A link that isn't a YouTube channel (a playlist, or a channel on another
-    site) is listed as it is.
+    site) is listed as it is - except a TikTok video, which stands for its whole profile.
     """
     base = youtube_channel_base(spec.channel)
-    pages = [(f"{base}/{tab}", CHANNEL_TABS[tab]) for tab in spec.channel_tabs] if base else [(spec.channel.strip(), "")]
+    link, profile = spec.channel.strip(), None
+    if not base:
+        profile = tiktok_profile(link, spec)
+        if profile:
+            link = profile[0]
+    pages = [(f"{base}/{tab}", CHANNEL_TABS[tab]) for tab in spec.channel_tabs] if base else [(link, "")]
     rows: list[VideoRow] = []
     seen: set[str] = set()
     notes: list[str] = []
@@ -454,10 +502,20 @@ def list_channel(spec: JobSpec) -> Scan:
             if tab and "does not have" in message.lower():  # e.g. a channel that never streamed
                 notes.append(f"no {tab} tab")
                 continue
+            if is_tiktok(url) and "secondary user id" in message.lower():
+                raise JobError(
+                    "TikTok doesn't let profile pages be read. Paste the link of any one video from "
+                    "this profile instead: the whole profile is listed from it.") from error
             hint = "" if base else (
                 " Some sites' profiles can't be listed (Instagram, Facebook, X): "
                 "paste the links of the posts under Links instead.")
             raise JobError(f"Couldn't list {url}: {message.rstrip('.')}.{hint}") from error
+        if profile:
+            # Listed by id, the videos' links read "@<id>/video/..."; put the @handle back.
+            label = profile[2]
+            for entry in entries:
+                if entry.get("url") and profile[1]:
+                    entry["url"] = entry["url"].replace(f"/@{link.removeprefix('tiktokuser:')}/", f"/@{profile[1]}/")
         label = label or info.get("channel") or info.get("uploader") or (info.get("title") or "").removesuffix(f" - {tab}")
         before = len(rows)
         add_entries(rows, seen, entries, videos_only=bool(base))
@@ -532,6 +590,29 @@ def glob_escape(text: str) -> str:
     return re.sub(r"([\[\]*?])", r"[\1]", text)
 
 
+# The id yt-dlp gives a video on a few other sites, where the link shows it. File
+# names carry it ("Title [id].mp4"), which is how a rerun knows what it already has.
+SITE_IDS = (
+    (("tiktok.com",), re.compile(r"/(?:video|photo)/(\d+)")),
+    (("instagram.com",), re.compile(r"/(?:p|reels?|tv)/([\w-]+)")),
+    (("vimeo.com",), re.compile(r"^/(?:.*/)?(\d{5,})(?:/|$)")),
+)
+
+
+def file_id(url: str) -> str:
+    """The id a download of this link is named with: YouTube's, or one of SITE_IDS'. "" if unknown."""
+    ident = video_id(url)
+    if ident:
+        return ident
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    for hosts, pattern in SITE_IDS:
+        if host.endswith(hosts):
+            found = pattern.search(parsed.path)
+            return found[1] if found else ""
+    return ""
+
+
 def video_id(url: str) -> str:
     """The YouTube id in a URL, used to spot an already-downloaded file."""
     parsed = urlparse(url)
@@ -561,10 +642,10 @@ def target_stem(item: VideoRow) -> str | None:
     return None
 
 
-def existing_by_id(folder: Path, ident: str) -> Path | None:
+def existing_by_id(folder: Path, ident: str, audio: str = "") -> Path | None:
     """Find a previous download tagged with this video id, e.g. "Title [abc123].mp4"."""
     for path in sorted(folder.glob(f"*[[]{ident}].*")):
-        if is_finished_video(path):
+        if is_finished(path, audio):
             return path
     return None
 
@@ -578,6 +659,21 @@ def unique_stem(stem: str, taken: set[str], lock: threading.Lock) -> str:
             counter += 1
         taken.add(candidate.lower())
         return candidate
+
+
+def is_finished(path: Path, audio: str = "") -> bool:
+    """A finished download of the kind the run saves: a video, or audio in the `audio` format."""
+    if not audio:
+        return is_finished_video(path)
+    return path.is_file() and path.suffix.lower() == f".{audio}" and not FORMAT_INTERMEDIATE_RE.search(path.name)
+
+
+def is_finished_audio(path: Path) -> bool:
+    return (
+        path.is_file()
+        and path.suffix.lower() in AUDIO_EXTENSIONS
+        and not FORMAT_INTERMEDIATE_RE.search(path.name)
+    )
 
 
 def is_finished_video(path: Path) -> bool:
@@ -596,9 +692,9 @@ def is_finished_video(path: Path) -> bool:
     )
 
 
-def existing_download(folder: Path, stem: str) -> Path | None:
+def existing_download(folder: Path, stem: str, audio: str = "") -> Path | None:
     for path in sorted(folder.glob(f"{glob_escape(stem)}.*")):
-        if is_finished_video(path):
+        if is_finished(path, audio):
             return path
     return None
 
@@ -649,6 +745,7 @@ class Options:
     cookies_file: Path | None = None
     playlists: bool = False
     reuse_only: bool = False  # save only videos whose license allows reuse
+    audio: str = ""  # "": save the video; else save only its sound, in this format (AUDIO_FORMATS)
 
 
 @dataclass
@@ -689,6 +786,11 @@ def is_direct_file(url: str) -> bool:
     return Path(unquote(urlparse(url).path)).suffix.lower() in VIDEO_EXTENSIONS
 
 
+def is_tiktok(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return host.endswith(("tiktok.com", "douyin.com"))
+
+
 def file_size(path: Path) -> int:
     try:
         return path.stat().st_size
@@ -708,28 +810,56 @@ def human_size(num_bytes: float) -> str:
 # and the occasional extractor that reports no duration.
 
 
-def format_selector(quality: str, have_ffmpeg: bool, h264_only: bool = False) -> str:
-    """Select mp4 video plus m4a audio, capped at `quality` (a height or 'best').
+def format_selector(have_ffmpeg: bool, h264_only: bool = False) -> str:
+    """Select mp4 video plus m4a audio. How large a picture is quality_sort's part.
 
     Without ffmpeg nothing can be merged, so only already-combined formats are
     offered; on YouTube that generally caps out at 360p.
     """
-    cap = "" if quality in ("best", "") else f"[height<=?{quality.rstrip('p')}]"
     if not have_ffmpeg:
-        return f"best[ext=mp4]{cap}/best[ext=mp4]/best{cap}/best"
+        return f"best[ext=mp4]{NOT_HEVC}/best[ext=mp4]/best"
 
     chain = []
     if h264_only:
         # avc1 plays everywhere; YouTube otherwise often serves av01 inside mp4.
-        chain.append(f"bestvideo[ext=mp4][vcodec^=avc1]{cap}+bestaudio[ext=m4a]")
-    chain += [
-        f"bestvideo[ext=mp4]{cap}+bestaudio[ext=m4a]",
-        f"bestvideo{cap}+bestaudio",
-        f"best[ext=mp4]{cap}",
-        f"best{cap}",
-        "best",
-    ]
+        # TikTok and the like serve video and sound in one file, its codec named "h264".
+        chain += [
+            "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]",
+            "best[ext=mp4][vcodec^=avc1]",
+            "best[ext=mp4][vcodec^=h264]",
+        ]
+    # Anything but HEVC first, even at a lower resolution (one TikTok video's H.264
+    # is 576p where its HEVC is 720p): a video the player can't show is no use here.
+    for codecs in (NOT_HEVC, ""):
+        chain += [
+            f"bestvideo[ext=mp4]{codecs}+bestaudio[ext=m4a]",
+            f"bestvideo{codecs}+bestaudio",
+            f"best[ext=mp4]{codecs}",
+            f"best{codecs}",
+        ]
     return "/".join(chain)
+
+
+def quality_sort(quality: str) -> list[str]:
+    """yt-dlp's format order for a quality ('best' or a number of lines, e.g. '1080').
+
+    The largest picture up to it, else the smallest above it. yt-dlp's "res" is
+    the short side, so a vertical 1080x1920 video (TikTok, Shorts) is 1080p; a
+    height limit would have ruled it out, and taken 576x1024 instead.
+    """
+    return [] if quality in ("best", "") else [f"res:{quality.rstrip('p')}"]
+
+
+def audio_selector(url: str, audio: str) -> str:
+    """The best audio-only stream; failing that, a whole video to take the sound from.
+
+    TikTok's audio-only format is the post's sound - often the whole song a video
+    borrowed, not what was said in it - so there the sound comes out of the video.
+    """
+    if is_tiktok(url):
+        return "best"
+    # An m4a stream is saved as it is; any other target is re-encoded, so take the best stream.
+    return ("bestaudio[ext=m4a]/" if audio == "m4a" else "") + "bestaudio/best"
 
 
 def ytdlp_options(
@@ -738,6 +868,7 @@ def ytdlp_options(
     row_number: int,
     events: Events,
     cancel: threading.Event | None,
+    url: str = "",
 ) -> dict:
     have_ffmpeg = options.ffmpeg is not None
     # No name in the sheet: let yt-dlp use the video's own title, tagged with the
@@ -745,9 +876,12 @@ def ytdlp_options(
     # characters: a TikTok or Instagram caption can run to thousands, and Windows
     # paths can't. (YouTube titles are never longer, so their names are unchanged.)
     name_template = f"{stem}.%(ext)s" if stem else "%(title).100s [%(id)s].%(ext)s"
+    folder = options.output / AUDIO_WORK if options.audio else options.output
     settings = {
-        "outtmpl": {"default": str(options.output / name_template)},
-        "format": format_selector(options.quality, have_ffmpeg, options.h264_only),
+        "outtmpl": {"default": str(folder / name_template)},
+        "format": (audio_selector(url, options.audio) if options.audio
+                   else format_selector(have_ffmpeg, options.h264_only)),
+        "format_sort": [] if options.audio else quality_sort(options.quality),
         "noplaylist": not options.playlists,
         "retries": options.retries,
         "fragment_retries": options.retries,
@@ -763,9 +897,17 @@ def ytdlp_options(
         "continuedl": True,
     }
     if have_ffmpeg:
-        # Pin the app's own binary so a broken copy earlier on PATH cannot win,
-        # and guarantee an .mp4 container even when the source is webm.
+        # Pin the app's own binary so a broken copy earlier on PATH cannot win.
         settings["ffmpeg_location"] = options.ffmpeg
+    if options.audio:
+        # Pulls the sound out of whatever came down (and deletes that); a stream
+        # already in the format asked for is kept as it is, not re-encoded.
+        extract = {"key": "FFmpegExtractAudio", "preferredcodec": options.audio}
+        if options.audio != "wav":
+            extract["preferredquality"] = "192"  # kbps, where it has to be encoded
+        settings["postprocessors"] = [extract]
+    elif have_ffmpeg:
+        # Guarantee an .mp4 container even when the source is webm.
         settings["merge_output_format"] = "mp4"
         # --remux-video is a command line option only; through the API it is
         # this post-processor (the "remux_video" key would be ignored).
@@ -825,7 +967,7 @@ def download_with_ytdlp(
     cancel: threading.Event | None = None,
 ) -> Fetched:
     """Download one link. Raises NotAllowed when reuse_only rules the video out."""
-    settings = ytdlp_options(options, stem, item.row_number, events, cancel)
+    settings = ytdlp_options(options, stem, item.row_number, events, cancel, item.url)
     refused: dict = {}
     if options.reuse_only:
         # yt-dlp asks this with the video's details, before downloading anything.
@@ -849,8 +991,11 @@ def download_with_ytdlp(
             duration = max(0.0, float(info.get("duration") or 0.0))
         except (TypeError, ValueError):
             duration = 0.0
+        path = downloaded_path(downloader, info)
+        if options.audio:  # out of the work folder, now it is finished
+            path = path.replace(options.output / path.name)
         return Fetched(
-            downloaded_path(downloader, info), info.get("title") or "", duration,
+            path, info.get("title") or "", duration,
             license=info.get("license") or "", channel=info.get("channel") or info.get("uploader") or "",
             page_url=info.get("webpage_url") or item.url,
         )
@@ -946,11 +1091,11 @@ def download_one(
         return finish(Result(item.row_number, item.url, "cancelled", detail="not started"))
 
     stem = target_stem(item)
-    ident = video_id(item.url)
+    ident = file_id(item.url)
     if stem:
-        existing = existing_download(options.output, stem)
+        existing = existing_download(options.output, stem, options.audio)
     elif ident:
-        existing = existing_by_id(options.output, ident)
+        existing = existing_by_id(options.output, ident, options.audio)
     else:
         existing = None
 
@@ -983,7 +1128,7 @@ def download_one(
 
     for attempt in range(1, options.retries + 1):
         try:
-            if is_direct_file(item.url):
+            if is_direct_file(item.url) and not options.audio:  # for audio, yt-dlp fetches and converts it
                 fetched = download_direct(item, stem, options, events, cancel)
             else:
                 fetched = download_with_ytdlp(item, stem, options, events, cancel)
@@ -1005,7 +1150,12 @@ def download_one(
                 duration=duration, license=fetched.license, channel=fetched.channel,
             ))
         except NotAllowed as refused:
-            reason = f"license: {refused.license}" if refused.license else "no license given (all rights reserved)"
+            if refused.license:
+                reason = f"license: {refused.license}"
+            elif video_id(item.url):
+                reason = "no license given (all rights reserved)"
+            else:  # TikTok, Instagram, Facebook and most others never say
+                reason = "the site gives no license, so reuse can't be confirmed"
             events.log(f"[{item.row_number}] not allowed, {reason}")
             return finish(Result(item.row_number, item.url, "not_allowed", detail=reason,
                                  title=refused.title or item.title, license=refused.license))
@@ -1035,6 +1185,8 @@ def download_one(
 
     if any(word in last_error.lower() for word in LOGIN_NEEDED):
         last_error += " Set Advanced settings > Cookies from to a browser you're signed in to."
+    if is_tiktok(item.url) and re.search(r"unsupported url: \S*tiktok\.com/?(\?|$)", last_error, re.IGNORECASE):
+        last_error += " The link leads to TikTok's home page: the video was probably deleted or made private."
     events.log(f"[{item.row_number}] FAILED: {last_error[:200]}")
     return finish(Result(item.row_number, item.url, "failed", detail=last_error))
 
@@ -1219,19 +1371,21 @@ def folder_summary(folder: Path) -> dict:
     files = read_index(folder)
     report = read_previous_report(folder)
     videos = [path for path in folder.iterdir() if is_finished_video(path)]
+    audio = [path for path in folder.iterdir() if is_finished_audio(path)]
     seconds = 0.0
-    for path in videos:
+    for path in videos + audio:
         seconds += files.get(path.name, {}).get("duration") or report.get(path.name, (0.0,))[0] or 0.0
     return {
         "videos": len(videos),
-        "bytes": sum(file_size(path) for path in videos),
+        "audio": len(audio),
+        "bytes": sum(file_size(path) for path in videos + audio),
         "seconds": seconds,
-        "updated": max((path.stat().st_mtime for path in videos), default=folder.stat().st_mtime),
+        "updated": max((path.stat().st_mtime for path in videos + audio), default=folder.stat().st_mtime),
     }
 
 
 def folder_overview(folder: Path, ffmpeg: str | None = None) -> dict:
-    """Everything in a download folder, across every run: videos, hours, size, licenses, channels.
+    """Everything in a download folder, across every run: videos and audio, hours, size, licenses, channels.
 
     Lengths come from the dataset index or the last report; anything unknown is
     measured once with ffmpeg and remembered in the index.
@@ -1243,7 +1397,11 @@ def folder_overview(folder: Path, ffmpeg: str | None = None) -> dict:
     measured = False
     videos = []
     for path in sorted(folder.iterdir(), key=lambda p: p.name.lower()):
-        if not is_finished_video(path):
+        if is_finished_video(path):
+            kind = "Video"
+        elif is_finished_audio(path):
+            kind = "Audio"
+        else:
             continue
         size = file_size(path)
         entry = files.get(path.name, {})
@@ -1266,7 +1424,8 @@ def folder_overview(folder: Path, ffmpeg: str | None = None) -> dict:
             license_text = None
         channel = entry.get("channel") or attribution.get("channel") or (reported[3] if reported else "")
         videos.append({"duration": float(duration or 0), "size": size, "license": license_group(license_text),
-                       "reuse": license_text is not None and reuse_allowed(license_text), "channel": channel})
+                       "reuse": license_text is not None and reuse_allowed(license_text), "channel": channel,
+                       "kind": kind})
     if measured:
         write_index(folder, files)
 
@@ -1286,7 +1445,10 @@ def folder_overview(folder: Path, ffmpeg: str | None = None) -> dict:
     seconds = sum(video["duration"] for video in videos)
     return {
         "folder": str(folder),
-        "videos": len(videos),
+        "files": len(videos),  # videos plus audio files
+        "videos": sum(1 for video in videos if video["kind"] == "Video"),
+        "audio": sum(1 for video in videos if video["kind"] == "Audio"),
+        "kinds": grouped("kind"),
         "seconds": seconds,
         "bytes": sum(video["size"] for video in videos),
         "average": seconds / len(videos) if videos else 0.0,
@@ -1329,6 +1491,7 @@ class JobSpec:
     retries: int = 3
     timeout: int = 60
     h264: bool = False
+    audio: str = ""                     # "": videos; else only their sound, in this format (AUDIO_FORMATS)
     playlists: bool = False
     cookies_from_browser: str | None = None
     cookies_file: Path | None = None
@@ -1451,6 +1614,12 @@ def prepare_job(spec: JobSpec, scan: Scan | None = None) -> PreparedJob:
     Pass `scan` to reuse a scan the caller already did - the window scans as
     soon as a file is picked, so the sheet is not read twice.
     """
+    if spec.audio and spec.audio not in AUDIO_FORMATS:
+        raise JobError(f"Pick an audio format: {', '.join(AUDIO_FORMATS)}.")
+    ffmpeg = find_ffmpeg()
+    if spec.audio and not ffmpeg:
+        raise JobError("Saving audio needs ffmpeg, to take the sound out of the videos. "
+                       "Install it (or the imageio-ffmpeg package) and try again.")
     scan = scan or scan_source(spec)
 
     folder = spec.output
@@ -1465,8 +1634,9 @@ def prepare_job(spec: JobSpec, scan: Scan | None = None) -> PreparedJob:
         retries=max(1, spec.retries),
         timeout=spec.timeout,
         verbose=spec.verbose,
-        ffmpeg=find_ffmpeg(),
+        ffmpeg=ffmpeg,
         h264_only=spec.h264,
+        audio=spec.audio,
         cookies_from_browser=spec.cookies_from_browser,
         cookies_file=spec.cookies_file,
         playlists=spec.playlists,
@@ -1500,7 +1670,8 @@ def job_header_lines(job: PreparedJob) -> list[str]:
     return [
         *source,
         f"Output      : {job.folder.resolve()}",
-        f"Quality     : {job.options.quality}    Workers: {job.workers}",
+        (f"Saving      : audio only, as {spec.audio}    Workers: {job.workers}" if spec.audio
+         else f"Quality     : {job.options.quality}    Workers: {job.workers}"),
         *(["Licenses    : only reuse-allowed videos (CC BY, CC BY-SA, CC0)"] if spec.reuse_only else []),
     ]
 
@@ -1543,6 +1714,10 @@ def run_job(
                 results.append(broken)
 
     results.sort(key=lambda result: result.row_number)
+    try:  # audio's work folder, unless a stopped download left a part to resume
+        (job.folder / AUDIO_WORK).rmdir()
+    except OSError:
+        pass
     counts = {status: sum(1 for result in results if result.status == status)
               for status in ("downloaded", "skipped", "not_allowed", "failed", "cancelled")}
     elapsed = time.monotonic() - start_clock

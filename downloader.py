@@ -32,7 +32,7 @@ MAX_WORKERS = 8
 MAX_PER_QUERY = 500
 MAX_LOG = 4000  # lines kept for the activity log
 DEFAULTS = {"quality": "1080", "workers": 3, "retries": 3, "timeout": 60, "h264": False, "playlists": False,
-            "cookies": "", "limit": 0, "reuse_only": False}
+            "cookies": "", "limit": 0, "reuse_only": False, "media": "video", "audio_format": "m4a"}
 
 
 def clean_options(raw: dict) -> dict:
@@ -43,6 +43,9 @@ def clean_options(raw: dict) -> dict:
     cookies = str(raw.get("cookies") or "")
     if cookies and cookies not in BROWSERS:
         raise ValueError("Pick a browser from the list, or Not needed.")
+    audio_format = str(raw.get("audio_format") or DEFAULTS["audio_format"])
+    if audio_format not in engine.AUDIO_FORMATS:
+        raise ValueError("Pick an audio format from the list.")
     return {
         "quality": quality,
         "workers": min(MAX_WORKERS, max(1, int(raw.get("workers") or DEFAULTS["workers"]))),
@@ -53,6 +56,8 @@ def clean_options(raw: dict) -> dict:
         "cookies": cookies,
         "limit": max(0, int(raw.get("limit") or 0)),
         "reuse_only": bool(raw.get("reuse_only")),
+        "media": "audio" if raw.get("media") == "audio" else "video",
+        "audio_format": audio_format,  # kept while saving video, for the next time audio is picked
     }
 
 
@@ -113,6 +118,7 @@ def make_spec(data: dict, options: dict, output: Path | None = None) -> engine.J
         spec.retries = options["retries"]
         spec.timeout = options["timeout"]
         spec.h264 = options["h264"]
+        spec.audio = options["audio_format"] if options["media"] == "audio" else ""
         spec.playlists = options["playlists"]
     return spec
 
@@ -226,7 +232,9 @@ class DownloadJob:
             if self.only is not None:
                 self.add_log(f"Going on with {len(job.rows)} video{'s' if len(job.rows) != 1 else ''} of the list.")
             self.add_log(f"Saving to {self.folder}")
-            if not self.ffmpeg:
+            if self.spec.audio:
+                self.add_log(f"Saving only the audio, as .{self.spec.audio} files.")
+            elif not self.ffmpeg:
                 self.add_log("ffmpeg not found - quality is capped around 360p.")
             if self.spec.reuse_only:
                 self.add_log("Only reuse-allowed videos (CC BY, CC BY-SA, CC0): each license is checked before downloading.")
@@ -259,6 +267,7 @@ class DownloadJob:
             "running": self.running,
             "stopping": self.running and self.cancel.is_set(),
             "folder": self.folder,
+            "audio": self.spec.audio,  # "" for videos, else the audio format
             "ffmpeg": self.ffmpeg,
             "total": total,
             "rows": rows,
