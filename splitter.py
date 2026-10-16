@@ -7,7 +7,8 @@ An optional crop box per source video is applied to all of its clips.
 
 Segments, markers, the crop and the list of exported clips are kept per source
 video in <output>/_splits.json, so a long video can be split over several
-sessions and every clip can be traced back to its source.
+sessions and every clip can be traced back to its source. The dataset overview
+also keeps each source video's length there, measured once.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from pathlib import Path
 
 from flask import Blueprint, abort, jsonify, request, send_from_directory
 
-from common import NO_WINDOW, find_ffmpeg, list_videos, load_config, update_config
+from common import NO_WINDOW, find_ffmpeg, length_breakdown, list_videos, load_config, probe_duration, update_config
 
 bp = Blueprint("splitter", __name__, url_prefix="/api/split")
 lock = threading.Lock()
@@ -31,6 +32,7 @@ lock = threading.Lock()
 MANIFEST_NAME = "_splits.json"
 MIN_SEGMENT = 0.2  # seconds
 MIN_CROP = 32  # pixels
+CLIP_LENGTHS = [(3, "Under 3 s"), (10, "3–10 s"), (30, "10–30 s"), (60, "30–60 s"), (float("inf"), "Over 1 min")]
 
 
 def clip_name(source: str, number: int) -> str:
@@ -39,6 +41,11 @@ def clip_name(source: str, number: int) -> str:
 
 def clip_pattern(source: str) -> re.Pattern:
     return re.compile(rf"{re.escape(Path(source).stem)}_\d+\.mp4", re.IGNORECASE)
+
+
+def clip_number(name: str) -> int:
+    """The N of <video>_N.mp4."""
+    return int(Path(name).stem.rsplit("_", 1)[1])
 
 
 def clean_segments(raw) -> list[dict]:
@@ -99,7 +106,7 @@ class SplitProject:
     def entry(self, file: str) -> dict:
         e = self.data.get(file, {})
         return {"segments": e.get("segments", []), "markers": e.get("markers", []), "crop": e.get("crop"),
-                "exported": e.get("exported", [])}
+                "exported": e.get("exported", []), "last_clip": e.get("last_clip", 0)}
 
     def existing_clips(self, file: str) -> list[str]:
         pattern = clip_pattern(file)
@@ -121,12 +128,43 @@ class SplitProject:
         }
 
 
-class ExportJob:
-    """Cuts the segments of one video, one after another, in a background thread."""
+def export_plan(current: SplitProject, file: str) -> dict:
+    """What Export has to do for one video: keep the clips that still match their segment
+    (same times, same crop), cut the other segments, and delete clips no segment matches.
 
-    def __init__(self, project: SplitProject, file: str, segments: list[dict], crop: dict | None, ffmpeg: str):
+    New clips take the next free numbers, after every number this video ever used: a
+    clip's name never changes and is never reused, because the labeler keeps labels by
+    file name. Working through a video from start to end, that is still time order.
+    """
+    entry = current.entry(file)
+    on_disk = set(current.existing_clips(file))
+    keep, todo, used = [], [], set()
+    for seg in entry["segments"]:
+        match = next((x for x in entry["exported"]
+                      if x["file"] in on_disk and x["file"] not in used and same_clip(x, seg, entry["crop"])), None)
+        if match:
+            keep.append(match)
+            used.add(match["file"])
+        else:
+            todo.append(seg)
+    last = max([entry["last_clip"], *(clip_number(name) for name in on_disk)])
+    return {
+        "keep": keep,
+        "todo": [(last + i, seg) for i, seg in enumerate(todo, 1)],  # (clip number, segment), in time order
+        "remove": sorted(on_disk - used, key=clip_number),
+        "last": last,
+    }
+
+
+class ExportJob:
+    """Cuts segments of one video, one after another, in a background thread.
+
+    `segments` is [(clip number, segment)]: only what isn't exported yet.
+    """
+
+    def __init__(self, project: SplitProject, file: str, segments: list[tuple[int, dict]], crop: dict | None, ffmpeg: str):
         self.project, self.file, self.segments, self.crop, self.ffmpeg = project, file, segments, crop, ffmpeg
-        self.total_time = sum(s["end"] - s["start"] for s in segments)
+        self.total_time = sum(s["end"] - s["start"] for _, s in segments)
         self.done_time = 0.0
         self.index = 0
         self.percent = 0.0
@@ -144,7 +182,7 @@ class ExportJob:
             "index": self.index,
             "total": len(self.segments),
             "percent": round(self.percent, 1),
-            "current": clip_name(self.file, self.index + 1),
+            "current": clip_name(self.file, self.segments[min(self.index, len(self.segments) - 1)][0]),
             "done": self.done,
             "error": self.error,
             "cancelled": self.cancelled,
@@ -158,11 +196,11 @@ class ExportJob:
 
     def _run(self):
         try:
-            for i, seg in enumerate(self.segments):
+            for i, (number, seg) in enumerate(self.segments):
                 if self.cancelled:
                     break
                 self.index = i
-                self._cut(i + 1, seg)
+                self._cut(number, seg)
                 self.done_time += seg["end"] - seg["start"]
         except Exception as e:  # noqa: BLE001 - shown to the user
             self.error = str(e)
@@ -210,6 +248,8 @@ class ExportJob:
                 "file": name, "start": seg["start"], "end": seg["end"], "crop": self.crop,
                 "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             })
+            entry["exported"].sort(key=lambda x: x["start"])
+            entry["last_clip"] = max(entry.get("last_clip", 0), number)
             self.project.save()
         self.done.append(name)
 
@@ -320,19 +360,25 @@ def api_export():
         return error("ffmpeg wasn't found. Install ffmpeg and add it to PATH, then try again.")
     with lock:
         entry = project.entry(file)
-        segments = entry["segments"]
-        if not segments:
+        if not entry["segments"]:
             return error("Add at least one segment first.")
-        existing = project.existing_clips(file)
-        if existing and not data.get("overwrite"):
-            return error("Clips from this video already exist.", 409, existing=existing)
-        # The segment list is the source of truth: old clips of this video are replaced.
-        for name in existing:
+        # Only what's new: clips that still match their segment are kept as they are.
+        plan = export_plan(project, file)
+        if not plan["todo"] and not plan["remove"]:
+            return error("Every segment is already exported.")
+        if plan["remove"] and not data.get("overwrite"):
+            return error("Some exported clips no longer match a segment.", 409,
+                         existing=plan["remove"], new=len(plan["todo"]))
+        for name in plan["remove"]:  # their segment was changed or deleted
             (project.output_dir / name).unlink(missing_ok=True)
-        project.data.setdefault(file, {})["exported"] = []
+        stored = project.data.setdefault(file, {})
+        stored["exported"] = plan["keep"]
+        stored["last_clip"] = plan["last"]  # numbers of deleted clips are not used again
         project.save()
-        job = ExportJob(project, file, segments, entry["crop"], ffmpeg)
-    return jsonify({"ok": True})
+        if not plan["todo"]:
+            return jsonify({"ok": True, "job": False, "removed": plan["remove"]})
+        job = ExportJob(project, file, plan["todo"], entry["crop"], ffmpeg)
+    return jsonify({"ok": True, "job": True, "removed": plan["remove"]})
 
 
 @bp.get("/job")
@@ -344,6 +390,84 @@ def api_job():
 def api_job_cancel():
     cancel_export()
     return jsonify({"ok": True})
+
+
+def same_clip(exported: dict, segment: dict, crop: dict | None) -> bool:
+    """An exported clip still matches its segment: same times, same crop."""
+    return (abs(exported["start"] - segment["start"]) < 0.002 and abs(exported["end"] - segment["end"]) < 0.002
+            and (exported.get("crop") or None) == (crop or None))
+
+
+@bp.get("/overview")
+def api_overview():
+    """The whole dataset: source videos and their hours, the clips and their hours, what's left to export."""
+    require()
+    current = project
+    with lock:
+        videos = list(current.videos)
+        known = {file: (entry.get("duration"), entry.get("source_size")) for file, entry in current.data.items()}
+    # Source lengths are measured once with ffmpeg and kept in the manifest.
+    ffmpeg = find_ffmpeg()
+    measured = {}
+    for file in videos:
+        path = current.source_dir / file
+        size = path.stat().st_size if path.is_file() else 0
+        duration, measured_size = known.get(file, (None, None))
+        if not duration or measured_size != size:
+            measured[file] = (round(probe_duration(path, ffmpeg), 3), size)
+    with lock:
+        if measured:
+            for file, (duration, size) in measured.items():
+                current.data.setdefault(file, {}).update(duration=duration, source_size=size)
+            try:
+                current.save()
+            except OSError:
+                pass  # measured again next time
+        data = json.loads(json.dumps(current.data))  # a snapshot to count from
+
+    clip_lengths: list[float] = []
+    cropped = planned = split = in_progress = 0
+    planned_seconds = source_seconds = 0.0
+    per_video = []
+    for file in videos:
+        entry = data.get(file, {})
+        source = entry.get("duration") or 0.0
+        source_seconds += source
+        exported = [x for x in entry.get("exported", []) if (current.output_dir / x["file"]).is_file()]
+        lengths = [x["end"] - x["start"] for x in exported]
+        clip_lengths += lengths
+        cropped += sum(1 for x in exported if x.get("crop"))
+        todo = [s for s in entry.get("segments", []) if not any(same_clip(x, s, entry.get("crop")) for x in exported)]
+        planned += len(todo)
+        planned_seconds += sum(s["end"] - s["start"] for s in todo)
+        if exported:
+            split += 1
+        elif entry.get("segments"):
+            in_progress += 1
+        if exported or todo:
+            per_video.append({"name": Path(file).stem, "clips": len(exported), "seconds": sum(lengths),
+                              "source": source, "planned": len(todo)})
+    clip_seconds = sum(clip_lengths)
+    return jsonify({
+        "folder": str(current.output_dir),
+        "videos": len(videos),
+        "source_seconds": source_seconds,
+        "unmeasured": sum(1 for file in videos if not data.get(file, {}).get("duration")),
+        "split": split,
+        "in_progress": in_progress,
+        "untouched": len(videos) - split - in_progress,
+        "clips": len(clip_lengths),
+        "clip_seconds": clip_seconds,
+        "average": clip_seconds / len(clip_lengths) if clip_lengths else 0.0,
+        "shortest": min(clip_lengths, default=0.0),
+        "longest": max(clip_lengths, default=0.0),
+        "coverage": clip_seconds / source_seconds if source_seconds else 0.0,
+        "planned": planned,
+        "planned_seconds": planned_seconds,
+        "cropped": cropped,
+        "lengths": length_breakdown(clip_lengths, CLIP_LENGTHS),
+        "per_video": sorted(per_video, key=lambda v: (-v["seconds"], v["name"]))[:12],
+    })
 
 
 @bp.post("/reveal")

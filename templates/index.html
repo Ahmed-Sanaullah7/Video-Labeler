@@ -16,7 +16,7 @@
   </script>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body>
+<body{% if picker %} class="can-pick"{% endif %}>
 
 <!-- Icons (Lucide, ISC license) -->
 <svg class="sprite" aria-hidden="true">
@@ -66,6 +66,7 @@
   <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></symbol>
   <symbol id="i-crop" viewBox="0 0 24 24"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></symbol>
   <symbol id="i-stop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
 </svg>
 
@@ -201,28 +202,77 @@
     <div class="dl-rail-body">
       <div class="dl-card">
         <div class="dl-section">Source</div>
-        <label class="field">
-          <span class="field-label">Spreadsheet</span>
-          <span class="input-row">
-            <input id="dl-file" type="text" placeholder="D:\data\videos.xlsx" autocomplete="off" spellcheck="false">
-            <button type="button" id="dl-browse" class="btn sm desktop-only"><svg class="ic"><use href="#i-sheet"/></svg>Browse</button>
-          </span>
-        </label>
-        <label class="field">
-          <span class="field-label">Sheet</span>
-          <select id="dl-sheet" disabled><option value="">—</option></select>
-        </label>
-        <div class="field-pair">
+        <div id="dl-source" class="segmented full sm dl-source">
+          <button data-source="sheet" title="The links in a spreadsheet"><svg class="ic"><use href="#i-sheet"/></svg>Sheet</button>
+          <button data-source="links" title="Links you paste, from any video site"><svg class="ic"><use href="#i-link"/></svg>Links</button>
+          <button data-source="channel" title="Every video on a channel or profile"><svg class="ic"><use href="#i-video"/></svg>Channel</button>
+          <button data-source="search" title="The top results of keyword searches"><svg class="ic"><use href="#i-search"/></svg>Search</button>
+        </div>
+        <div class="dl-src" data-src="sheet">
           <label class="field">
-            <span class="field-label">Link column</span>
-            <select id="dl-url" disabled><option value="">Auto-detect</option></select>
+            <span class="field-label">Spreadsheet</span>
+            <span class="input-row">
+              <input id="dl-file" type="text" placeholder="D:\data\videos.xlsx" autocomplete="off" spellcheck="false">
+              <button type="button" id="dl-browse" class="btn sm desktop-only"><svg class="ic"><use href="#i-sheet"/></svg>Browse</button>
+            </span>
           </label>
           <label class="field">
-            <span class="field-label">Name column</span>
-            <select id="dl-name" disabled><option value="">Auto-detect</option></select>
+            <span class="field-label">Sheet</span>
+            <select id="dl-sheet" disabled><option value="">—</option></select>
+          </label>
+          <div class="field-pair">
+            <label class="field">
+              <span class="field-label">Link column</span>
+              <select id="dl-url" disabled><option value="">Auto-detect</option></select>
+            </label>
+            <label class="field">
+              <span class="field-label">Name column</span>
+              <select id="dl-name" disabled><option value="">Auto-detect</option></select>
+            </label>
+          </div>
+        </div>
+        <div class="dl-src hidden" data-src="links">
+          <label class="field">
+            <span class="field-label">Video links <span class="opt">one per line</span></span>
+            <textarea id="dl-links" rows="5" placeholder="https://www.youtube.com/watch?v=…&#10;https://www.tiktok.com/@name/video/…&#10;https://www.instagram.com/reel/…" spellcheck="false"></textarea>
+          </label>
+          <p class="dl-hint">YouTube, TikTok, Instagram, Facebook, X, Vimeo, Reddit and many more sites, or a direct link to a video file.</p>
+        </div>
+        <div class="dl-src hidden" data-src="channel">
+          <label class="field">
+            <span class="field-label">Channel or profile link</span>
+            <input id="dl-channel" type="text" placeholder="https://www.youtube.com/@name" autocomplete="off" spellcheck="false">
+          </label>
+          <p class="dl-hint">A YouTube channel, or a profile or channel on TikTok, Vimeo, Twitch, Dailymotion, Rumble and more. A playlist link works too.</p>
+          <div class="field">
+            <span class="field-label">Include <span class="opt">YouTube</span></span>
+            <div id="dl-tabs" class="dl-checks">
+              <label class="check"><input type="checkbox" value="videos" checked>Videos</label>
+              <label class="check"><input type="checkbox" value="streams">Live</label>
+              <label class="check"><input type="checkbox" value="shorts">Shorts</label>
+            </div>
+          </div>
+        </div>
+        <div class="dl-src hidden" data-src="search">
+          <label class="field">
+            <span class="field-label">Searches <span class="opt">one per line</span></span>
+            <textarea id="dl-queries" rows="3" placeholder="public speaking tips&#10;keynote speech" spellcheck="false"></textarea>
+          </label>
+          <label class="field">
+            <span class="field-label">Results per search</span>
+            <input id="dl-per-query" type="number" min="1" max="500" value="50">
           </label>
         </div>
+        <button id="dl-find" class="btn sm wide dl-find hidden"><svg class="ic"><use href="#i-search"/></svg>Find videos</button>
         <p id="dl-detected" class="dl-hint">Pick an .xlsx or .csv file with a column of video links.</p>
+      </div>
+
+      <div class="dl-card">
+        <div class="dl-section">License</div>
+        <label class="switch dl-switch">
+          <input id="dl-reuse" type="checkbox"><span class="track"></span>
+          <span class="dl-switch-text">Only reuse-allowed videos<small>Keeps videos licensed CC BY, CC BY-SA or CC0; each license is checked before downloading. Every saved video gets an attribution file.</small></span>
+        </label>
       </div>
 
       <div class="dl-card">
@@ -266,8 +316,8 @@
           </div>
           <div class="field-pair">
             <label class="field">
-              <span class="field-label">First N rows</span>
-              <input id="dl-limit" type="number" min="0" value="0" title="0 = all rows">
+              <span class="field-label">First N videos</span>
+              <input id="dl-limit" type="number" min="0" value="0" title="0 = all">
             </label>
             <label class="field">
               <span class="field-label">Cookies from</span>
@@ -283,14 +333,14 @@
               </select>
             </label>
           </div>
-          <p class="dl-hint">First N rows: 0 downloads every row. Browser cookies unlock age-restricted and members-only videos.</p>
+          <p class="dl-hint">First N videos: 0 takes them all (for a channel, the newest come first). Browser cookies unlock age-restricted and members-only videos.</p>
         </details>
       </div>
 
       <div class="dl-card">
         <div class="dl-section">Destination</div>
         <label class="field">
-          <span class="field-label">Output folder <span class="opt">optional</span></span>
+          <span class="field-label">Output folder <span id="dl-output-opt" class="opt">optional</span></span>
           <span class="input-row">
             <input id="dl-output" type="text" placeholder="Defaults to a downloads folder next to the spreadsheet" autocomplete="off" spellcheck="false">
             <button type="button" class="btn sm desktop-only" data-browse="dl-output"><svg class="ic"><use href="#i-folder"/></svg>Browse</button>
@@ -300,8 +350,14 @@
       </div>
     </div>
     <div class="dl-actions">
-      <button id="dl-start" class="btn primary" disabled><svg class="ic"><use href="#i-download"/></svg>Start download</button>
-      <button id="dl-stop" class="btn hidden"><svg class="ic"><use href="#i-stop"/></svg>Stop</button>
+      <div id="dl-again" class="dl-again hidden">
+        <button id="dl-resume" class="btn" title="Go on with the videos that aren't done yet"><svg class="ic"><use href="#i-play"/></svg>Resume<span id="dl-resume-n" class="badge"></span></button>
+        <button id="dl-retry" class="btn" title="Try the failed videos again"><svg class="ic"><use href="#i-refresh"/></svg>Retry failed<span id="dl-retry-n" class="badge"></span></button>
+      </div>
+      <div class="dl-actions-row">
+        <button id="dl-start" class="btn primary" disabled title="Download the whole list (videos already in the folder are skipped)"><svg class="ic"><use href="#i-download"/></svg>Start download</button>
+        <button id="dl-stop" class="btn hidden"><svg class="ic"><use href="#i-stop"/></svg>Stop</button>
+      </div>
     </div>
   </aside>
 
@@ -314,12 +370,13 @@
         <div class="dl-tile"><b id="dl-n-total">0</b><span>In list</span></div>
         <div class="dl-tile ok"><b id="dl-n-downloaded">0</b><span>Downloaded</span></div>
         <div class="dl-tile"><b id="dl-n-skipped">0</b><span>Already there</span></div>
+        <div id="dl-tile-blocked" class="dl-tile warn hidden" title="Licenses that don't allow reuse"><b id="dl-n-blocked">0</b><span>Not allowed</span></div>
         <div class="dl-tile bad"><b id="dl-n-failed">0</b><span>Failed</span></div>
         <div class="dl-tile accent"><b id="dl-n-data">0 B</b><span>Data</span></div>
       </div>
       <div class="dl-progress">
         <div class="export-text"><span id="dl-progress-title">Ready</span><span id="dl-progress-detail" class="muted"></span></div>
-        <div class="progress dl-bar"><span id="dl-bar-done"></span><span id="dl-bar-failed"></span><span id="dl-bar-active"></span></div>
+        <div class="progress dl-bar"><span id="dl-bar-done"></span><span id="dl-bar-blocked"></span><span id="dl-bar-failed"></span><span id="dl-bar-active"></span></div>
       </div>
       <div id="dl-done" class="export-done hidden">
         <div class="export-done-text"><svg class="ic"><use href="#i-check"/></svg><span id="dl-done-text"></span></div>
@@ -332,21 +389,32 @@
 
   <div class="panel dl-videos">
     <div class="panel-head">
-      <span class="panel-title">Videos</span>
-      <span id="dl-count" class="badge">0</span>
-      <div class="search dl-search">
-        <svg class="ic"><use href="#i-search"/></svg>
-        <input id="dl-search" type="search" placeholder="Search names and links" spellcheck="false">
+      <div id="dl-views" class="panel-tabs">
+        <button class="panel-tab active" data-view="videos">Videos <span id="dl-count" class="badge">0</span></button>
+        <button class="panel-tab" data-view="dataset" title="Everything in the output folder, across every run">Dataset</button>
       </div>
-      <div class="spacer"></div>
-      <div id="dl-filter" class="segmented sm">
-        <button data-filter="all" class="active">All</button>
-        <button data-filter="active">Active</button>
-        <button data-filter="done">Done</button>
-        <button data-filter="failed">Failed</button>
+      <div class="head-tools hidden" data-for="dataset">
+        <span id="dl-ds-folder" class="panel-sub"></span>
+        <div class="spacer"></div>
+        <button id="dl-ds-refresh" class="icon-btn sm" title="Count again"><svg class="ic"><use href="#i-refresh"/></svg></button>
+      </div>
+      <div class="head-tools" data-for="videos">
+        <div class="search dl-search">
+          <svg class="ic"><use href="#i-search"/></svg>
+          <input id="dl-search" type="search" placeholder="Search names and links" spellcheck="false">
+        </div>
+        <div class="spacer"></div>
+        <div id="dl-filter" class="segmented sm">
+          <button data-filter="all" class="active">All</button>
+          <button data-filter="active" title="Queued, downloading or stopped">To do</button>
+          <button data-filter="done">Done</button>
+          <button data-filter="failed">Failed</button>
+          <button data-filter="blocked" title="Licenses that don't allow reuse">Not allowed</button>
+        </div>
       </div>
     </div>
-    <div class="dl-table-wrap">
+    <div id="dl-dataset" class="dataset hidden" data-for="dataset"></div>
+    <div class="dl-table-wrap" data-for="videos">
       <table class="data-table dl-table">
         <thead><tr><th>#</th><th>Video</th><th>Status</th><th>Progress</th><th>Size</th></tr></thead>
         <tbody id="dl-body"></tbody>
@@ -460,8 +528,16 @@
     </main>
 
     <aside class="panel props">
-      <div class="panel-head"><span class="panel-title">Properties</span></div>
-      <div class="props-body">
+      <div class="panel-head">
+        <div id="split-views" class="panel-tabs">
+          <button class="panel-tab active" data-view="props">Properties</button>
+          <button class="panel-tab" data-view="dataset" title="All the clips in the output folder, and the long videos they come from">Dataset</button>
+        </div>
+        <div class="spacer"></div>
+        <button id="split-ds-refresh" class="icon-btn sm hidden" data-for="dataset" title="Count again"><svg class="ic"><use href="#i-refresh"/></svg></button>
+      </div>
+      <div id="split-dataset" class="dataset hidden" data-for="dataset"></div>
+      <div class="props-body" data-for="props">
         <details class="prop" open>
           <summary><svg class="ic twisty"><use href="#i-chevron"/></svg>Crop<span id="crop-info" class="prop-hint"></span></summary>
           <div class="prop-content">
@@ -495,7 +571,7 @@
           </div>
         </details>
       </div>
-      <div class="props-foot">
+      <div class="props-foot" data-for="props">
         <div id="export-progress" class="export hidden">
           <div class="export-text"><span id="export-text"></span><button id="export-cancel" class="btn ghost sm">Cancel</button></div>
           <div class="progress"><div id="export-bar" class="progress-bar"></div></div>
@@ -505,7 +581,7 @@
           <button id="open-labeler" class="btn sm"><svg class="ic"><use href="#i-tag"/></svg>Open in Labeler</button>
         </div>
         <div id="export-error" class="alert error hidden"></div>
-        <button id="export-btn" class="btn primary wide"><svg class="ic"><use href="#i-scissors"/></svg>Export clips</button>
+        <button id="export-btn" class="btn primary wide"><svg class="ic"><use href="#i-scissors"/></svg><span id="export-btn-text">Export clips</span></button>
       </div>
     </aside>
 

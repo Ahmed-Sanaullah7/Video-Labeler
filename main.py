@@ -236,9 +236,63 @@ def quit_app():
 # ---------------------------------------------------------------- routes
 
 
+def is_local() -> bool:
+    return request.remote_addr in ("127.0.0.1", "::1")
+
+
+def picker_available() -> bool:
+    """tkinter is there to open a Windows picker (it is left out of the packaged app, which has its window's)."""
+    try:
+        import tkinter  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+pick_lock = threading.Lock()
+
+
+def tk_pick(kind: str, start: str) -> str | None:
+    """A Windows folder or spreadsheet picker for the app in a browser; the app window has its own."""
+    import tkinter
+    from tkinter import filedialog
+
+    folder = start if os.path.isdir(start) else os.path.dirname(start)
+    root = tkinter.Tk()  # one per pick, made and destroyed in this request's thread
+    root.withdraw()
+    root.attributes("-topmost", True)  # in front of the browser
+    try:
+        if kind == "file":
+            path = filedialog.askopenfilename(
+                parent=root, title="Choose the spreadsheet", initialdir=folder if os.path.isdir(folder) else None,
+                filetypes=[("Spreadsheets", "*.xlsx *.xlsm *.xls *.csv"), ("All files", "*.*")])
+        else:
+            path = filedialog.askdirectory(
+                parent=root, title="Choose a folder", initialdir=folder if os.path.isdir(folder) else None)
+    finally:
+        root.destroy()
+    return os.path.normpath(path) if path else None
+
+
 @app.get("/")
 def index():
-    return render_template("index.html", version=__version__)
+    # Browse buttons: the app window always has them; a browser on this PC gets a picker from the server.
+    return render_template("index.html", version=__version__, picker=is_local() and picker_available())
+
+
+@app.post("/api/pick")
+def api_pick():
+    """Open a folder or file picker on this PC and return the chosen path (None when cancelled)."""
+    if not is_local() or not picker_available():
+        abort(400)
+    data = request.get_json(force=True)
+    if not pick_lock.acquire(blocking=False):
+        return jsonify({"ok": False, "error": "A Browse window is already open."}), 409
+    try:
+        path = tk_pick("file" if data.get("kind") == "file" else "folder", (data.get("start") or "").strip().strip('"'))
+    finally:
+        pick_lock.release()
+    return jsonify({"ok": True, "path": path})
 
 
 @app.get("/api/version")

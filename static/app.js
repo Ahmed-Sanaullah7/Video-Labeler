@@ -54,6 +54,77 @@ function setPref(name, value) { localStorage.setItem(prefKey(name), JSON.stringi
 // The desktop app (pywebview) exposes window.pywebview.api; a plain browser doesn't.
 function desktop() { return window.pywebview && window.pywebview.api; }
 
+// ---------------------------------------------------------------- panel views + dataset overviews
+
+// Show one view of a panel with tabs: its tab is active, and only elements marked data-for that view show.
+function showPanelView(tabs, view) {
+  tabs.querySelectorAll(".panel-tab").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
+  tabs.closest(".panel").querySelectorAll("[data-for]").forEach((el) => el.classList.toggle("hidden", el.dataset.for !== view));
+}
+
+function panelView(tabs) {
+  return tabs.querySelector(".panel-tab.active").dataset.view;
+}
+
+// Short, for a tile: 3.2 h · 42 min · 35 s
+function fmtLength(sec) {
+  if (sec >= 3600) return `${(sec / 3600).toFixed(sec >= 360000 ? 0 : 1)} h`;
+  if (sec >= 60) return `${Math.round(sec / 60)} min`;
+  return `${sec >= 10 || !sec ? Math.round(sec) : sec.toFixed(1)} s`;
+}
+
+// Exact, for a tooltip: 3h 12m 5s
+function fmtLong(sec) {
+  const t = Math.round(sec), h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
+  return h ? `${h}h ${m}m ${s}s` : m ? `${m}m ${s}s` : `${s}s`;
+}
+
+// A dataset overview: tiles [value, label, tooltip, class], then sections {title, rows: [{label, value, text, cls, title}]}
+// drawn as bars scaled to the section's largest value, then note lines.
+function renderDataset(el, tiles, sections, notes = []) {
+  const make = (tag, cls, text) => {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+  el.replaceChildren();
+  const grid = make("div", "ds-tiles");
+  for (const [value, label, title, cls] of tiles) {
+    const tile = make("div", `ds-tile ${cls || ""}`);
+    tile.title = title || "";
+    tile.append(make("b", "", value), make("span", "", label));
+    grid.append(tile);
+  }
+  el.append(grid);
+  for (const { title, rows } of sections) {
+    if (!rows.length) continue;
+    const section = make("section", "ds-section");
+    section.append(make("h3", "", title));
+    const max = Math.max(...rows.map((r) => r.value), 0) || 1;
+    for (const r of rows) {
+      const row = make("div", "ds-row");
+      row.title = r.title || "";
+      const meter = make("div", `ds-meter ${r.cls || ""}`);
+      const fill = make("i");
+      fill.style.width = `${(100 * r.value) / max}%`;
+      meter.append(fill);
+      row.append(make("span", "ds-label", r.label), meter, make("span", "ds-num", r.text));
+      section.append(row);
+    }
+    el.append(section);
+  }
+  for (const line of notes) el.append(make("p", "ds-note", line));
+}
+
+function datasetMessage(el, text) {
+  el.replaceChildren();
+  const p = document.createElement("p");
+  p.className = "ds-note";
+  p.textContent = text;
+  el.append(p);
+}
+
 // ---------------------------------------------------------------- theme
 
 const THEME_KEY = "labeler:theme";
@@ -160,13 +231,20 @@ async function submitSetup() {
   }
 }
 
+// A folder or file picker: the app window's own, or, in a browser on this PC, one the server opens.
+async function pickPath(kind, start) {
+  if (desktop()) return kind === "file" ? desktop().pick_file(start) : desktop().pick_folder(start);
+  return (await api("POST", "/api/pick", { kind, start })).path;
+}
+
 async function browse(inputId) {
   const input = $(inputId);
   // Start in the folder already typed, or next to the videos folder for the output.
   const start = input.value || (input.dataset.startFrom ? $(input.dataset.startFrom).value : "");
-  const folder = await desktop().pick_folder(start);
+  const folder = await pickPath("folder", start);
   if (!folder) return;
   input.value = folder;
+  input.dispatchEvent(new Event("change"));  // as if typed: e.g. the dataset overview follows the new folder
   if (inputId === "setup-videos" && !$("setup-project").value) {
     $("setup-project").placeholder = `Defaults to "${folder.split(/[\\/]/).pop()}"`;
   }

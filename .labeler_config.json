@@ -2,5 +2,31 @@
   "videos": "C:\\Users\\Waqas Iqrar\\Downloads\\Video",
   "output": "D:\\output",
   "split_source": "C:\\Podcast For Stream",
-  "split_output": "C:\\Clipper"
+  "split_output": "C:\\Clipper",
+  "download_output": "C:\\Podcast For Stream\\Joe Rogan",
+  "download_options": {
+    "quality": "1080",
+    "workers": 3,
+    "retries": 3,
+    "timeout": 60,
+    "h264": false,
+    "playlists": false,
+    "cookies": "",
+    "limit": 0,
+    "reuse_only": true
+  },
+  "download_source": {
+    "source": "search",
+    "links": [
+      "https://www.facebook.com/hinditutorialsofficial/posts/how-to-create-facebook-account-facebook-id-kaise-banaye/1610368401096560/"
+    ],
+    "channel": "",
+    "tabs": [
+      "videos"
+    ],
+    "queries": [
+      "Connan Podcast"
+    ],
+    "per_query": 100
+  }
 }

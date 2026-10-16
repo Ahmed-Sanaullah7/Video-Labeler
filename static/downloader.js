@@ -1,18 +1,26 @@
 "use strict";
 
-// Video Downloader: download the videos linked in a spreadsheet (see downloader.py).
+// Video Downloader: download the videos linked in a spreadsheet, a whole channel,
+// or the results of keyword searches (see downloader.py).
 
 const DL_STATUS = {
   queued: "Queued", downloading: "Downloading", downloaded: "Downloaded",
-  skipped: "Already there", failed: "Failed", cancelled: "Stopped",
+  skipped: "Already there", not_allowed: "Not allowed", failed: "Failed", cancelled: "Stopped",
 };
 const DL_FILTERS = {
   all: null,
-  active: ["queued", "downloading"],
+  active: ["queued", "downloading", "cancelled"],  // "To do": not finished yet, stopped ones included
   done: ["downloaded", "skipped"],
-  failed: ["failed", "cancelled"],
+  failed: ["failed"],
+  blocked: ["not_allowed"],
 };
-const DL_FINISHED = ["downloaded", "skipped", "failed", "cancelled"];
+const DL_FINISHED = ["downloaded", "skipped", "not_allowed", "failed", "cancelled"];
+const DL_EMPTY = {
+  sheet: "Pick a spreadsheet to see the videos it links to.",
+  links: "Paste video links, one per line.",
+  channel: "Paste a channel link and click Find videos.",
+  search: "Type your searches, one per line, and click Find videos.",
+};
 
 const dl = {
   loaded: false,      // the settings were filled in from the last session
@@ -26,6 +34,10 @@ const dl = {
   watching: false,
   timer: null,
   scanToken: 0,
+  listing: false,     // a list is being fetched (Start waits for it)
+  partial: false,     // this run is a Resume / Retry of part of the list on screen
+  runRows: null,      // row numbers in this run (null: the whole list)
+  lastSearch: null,   // {count, notes, filtered}: what Find videos found for the searches
   folder: "",
   elapsed: 0,
 };
@@ -76,9 +88,25 @@ function renderWorkers() {
   $("dl-workers-hint").classList.toggle("warn", warn);
 }
 
-function sheetChoice() {
-  return { file: $("dl-file").value, sheet: $("dl-sheet").value, url_column: $("dl-url").value,
-           name_column: $("dl-name").value, limit: Number($("dl-limit").value) || 0 };
+function currentSource() {
+  const active = document.querySelector("#dl-source button.active");
+  return active ? active.dataset.source : "sheet";
+}
+
+function searchLines() {
+  return $("dl-queries").value.split("\n").map((q) => q.trim()).filter(Boolean);
+}
+
+// Where the videos come from, as the server expects it (see clean_source in downloader.py).
+function sourceChoice() {
+  return {
+    source: currentSource(),
+    file: $("dl-file").value, sheet: $("dl-sheet").value, url_column: $("dl-url").value, name_column: $("dl-name").value,
+    links: $("dl-links").value,
+    channel: $("dl-channel").value,
+    tabs: [...document.querySelectorAll("#dl-tabs input:checked")].map((b) => b.value),
+    queries: $("dl-queries").value, per_query: Number($("dl-per-query").value) || 50,
+  };
 }
 
 function dlOptions() {
@@ -87,7 +115,36 @@ function dlOptions() {
     retries: Number($("dl-retries").value), timeout: Number($("dl-timeout").value),
     h264: $("dl-h264").checked, playlists: $("dl-playlists").checked,
     cookies: $("dl-cookies").value, limit: Number($("dl-limit").value) || 0,
+    reuse_only: $("dl-reuse").checked,
   };
+}
+
+const blankRow = (r) => ({ ...r, status: "queued", done: 0, total: 0, speed: 0, size: 0, duration: 0, detail: "",
+                           path: "", title: r.title || "", license: "" });
+
+// Rows of the list with one of these statuses, by number.
+function rowsWith(...statuses) {
+  return [...dl.rows.values()].filter((r) => statuses.includes(r.status)).map((r) => r.row);
+}
+
+// Show one source's fields. A different source means a different list, so the table is emptied.
+function setSource(source, refresh = true) {
+  document.querySelectorAll("#dl-source button").forEach((b) => b.classList.toggle("active", b.dataset.source === source));
+  document.querySelectorAll("#downloader .dl-src").forEach((el) => el.classList.toggle("hidden", el.dataset.src !== source));
+  const sheet = source === "sheet";
+  // A sheet and pasted links are read straight away; a channel or search goes online, so waits for Find videos.
+  $("dl-find").classList.toggle("hidden", sheet || source === "links");
+  $("dl-output-opt").classList.toggle("hidden", !sheet);
+  $("dl-output").placeholder = sheet ? "Defaults to a downloads folder next to the spreadsheet" : "Pick a folder for the videos";
+  if (!refresh) return;
+  cancelListing();  // drop the answer to a listing still on its way
+  dlAlert("");
+  $("dl-done").classList.add("hidden");
+  setRows([]);
+  if (sheet && $("dl-file").value.trim()) return scanSheet(true);
+  if (source === "links") return listLinks();
+  $("dl-detected").textContent = sheet ? "Pick an .xlsx or .csv file with a column of video links." : DL_EMPTY[source];
+  renderDownloadControls();
 }
 
 // ---------------------------------------------------------------- screen
@@ -98,8 +155,17 @@ async function loadDownload() {
   $("dl-ffmpeg").classList.toggle("hidden", data.ffmpeg);
   if (!dl.loaded) {
     dl.loaded = true;
-    const o = data.options;
+    const o = data.options, src = data.source;
     $("dl-file").value = data.file;
+    $("dl-links").value = (src.links || []).join("\n");
+    $("dl-channel").value = src.channel || "";
+    document.querySelectorAll("#dl-tabs input").forEach((b) => { b.checked = (src.tabs || []).includes(b.value); });
+    $("dl-queries").value = (src.queries || []).join("\n");
+    $("dl-per-query").value = src.per_query || 50;
+    $("dl-reuse").checked = !!o.reuse_only;
+    setSource(src.source || "sheet", false);
+    $("dl-detected").textContent = currentSource() === "sheet"
+      ? "Pick an .xlsx or .csv file with a column of video links." : DL_EMPTY[currentSource()];
     $("dl-output").value = data.output;
     $("dl-quality").value = o.quality;
     $("dl-workers").value = o.workers;
@@ -111,7 +177,9 @@ async function loadDownload() {
     $("dl-limit").value = o.limit;
     renderWorkers();
   }
-  if ($("dl-file").value && !dl.rows.size) await scanSheet(true);
+  // A sheet or pasted links are read straight away; a channel or search waits for Find videos (it goes online).
+  if (currentSource() === "sheet" && $("dl-file").value && !dl.rows.size) await scanSheet(true);
+  if (currentSource() === "links" && !dl.rows.size) await listLinks();
   // Show a running download, or the last one the first time the page opens the downloader.
   if (data.running || (data.has_job && !dl.jobShown)) {
     dl.jobShown = true;
@@ -129,6 +197,28 @@ function downloadLeave() {
 
 // ---------------------------------------------------------------- the sheet
 
+// Ask the server for the list. Only the newest request counts, and Start (or a change of
+// source) drops one still on its way: returns null for those. Start waits while one runs.
+async function fetchList(body) {
+  const token = ++dl.scanToken;
+  dl.listing = true;
+  renderDownloadControls();
+  try {
+    const s = await api("POST", "/api/download/scan", body);
+    return token === dl.scanToken ? s : null;
+  } catch (e) {
+    if (token === dl.scanToken) throw e;
+    return null;
+  } finally {
+    if (token === dl.scanToken) dl.listing = false;
+  }
+}
+
+function cancelListing() {
+  dl.scanToken++;
+  dl.listing = false;
+}
+
 // Read the sheet again with the chosen sheet and columns; the newest scan wins.
 async function scanSheet(newFile = false) {
   if (dl.running) return;
@@ -139,16 +229,16 @@ async function scanSheet(newFile = false) {
   }
   dlAlert("");
   $("dl-done").classList.add("hidden");
-  const token = ++dl.scanToken;
   if (!$("dl-file").value.trim()) {
+    cancelListing();
     setRows([]);
     $("dl-detected").textContent = "Pick an .xlsx or .csv file with a column of video links.";
     return renderDownloadControls();
   }
   $("dl-detected").textContent = "Reading the sheet…";
   try {
-    const s = await api("POST", "/api/download/scan", sheetChoice());
-    if (token !== dl.scanToken) return;
+    const s = await fetchList({ ...sourceChoice(), source: "sheet", options: dlOptions() });
+    if (!s) return;
     const columns = s.columns.map((c) => [c, c]);
     fillSelect($("dl-sheet"), s.sheets.length ? s.sheets.map((n) => [n, n]) : [["", "Single sheet"]], s.sheet);
     fillSelect($("dl-url"), [["", "Auto-detect"], ...columns], $("dl-url").value);
@@ -156,12 +246,11 @@ async function scanSheet(newFile = false) {
     $("dl-sheet").disabled = !s.sheets.length;
     $("dl-url").disabled = $("dl-name").disabled = false;
     $("dl-output").placeholder = `Defaults to ${s.default_output}`;
-    setRows(s.rows.map((r) => ({ ...r, status: "queued", done: 0, total: 0, speed: 0, size: 0, detail: "", path: "", title: "" })));
+    setRows(s.rows.map(blankRow));
     const names = s.name_column ? `“${s.name_column}”` : "the video's own title";
     $("dl-detected").textContent = `${plural(s.rows.length, "link")} in “${s.url_column}”, named after ${names}`
       + (s.headerless ? ". The sheet has no header row." : ".");
   } catch (e) {
-    if (token !== dl.scanToken) return;
     setRows([]);
     $("dl-detected").textContent = "Couldn't read this sheet.";
     dlAlert(e.message);
@@ -169,8 +258,73 @@ async function scanSheet(newFile = false) {
   renderDownloadControls();
 }
 
+// Pasted links, read as they are typed. Nothing goes online until Start download.
+async function listLinks() {
+  if (dl.running) return;
+  dlAlert("");
+  $("dl-done").classList.add("hidden");
+  if (!$("dl-links").value.trim()) {
+    cancelListing();
+    setRows([]);
+    $("dl-detected").textContent = DL_EMPTY.links;
+    return renderDownloadControls();
+  }
+  try {
+    const s = await fetchList({ ...sourceChoice(), options: dlOptions() });
+    if (!s) return;
+    setRows(s.rows.map(blankRow));
+    $("dl-detected").textContent = `${plural(s.rows.length, "link")}${s.notes.length ? `; ${s.notes.join(", ")}` : ""}.`;
+  } catch (e) {
+    setRows([]);
+    $("dl-detected").textContent = e.message;
+  }
+  renderDownloadControls();
+}
+
+// What a search found, and what the reuse box will do with it.
+function searchSummary() {
+  const s = dl.lastSearch;
+  const text = `${plural(s.count, "video")}: ${s.notes.join(", ")}.`;
+  if (s.filtered) return `${text} YouTube's Creative Commons filter was used.`;
+  if ($("dl-reuse").checked) {
+    return `${text} Each video's license is checked when you start. To let YouTube's Creative Commons `
+      + "filter narrow the list first, click Find videos again.";
+  }
+  return text;
+}
+
+// List a channel's videos, or the results of the searches. Goes online, so only on Find videos.
+async function findVideos() {
+  if (dl.running) return;
+  const source = currentSource();
+  if (source === "sheet") return scanSheet();
+  if (source === "links") return listLinks();
+  dlAlert("");
+  $("dl-done").classList.add("hidden");
+  $("dl-detected").textContent = source === "channel"
+    ? "Listing the channel… a large channel can take a minute." : "Searching YouTube…";
+  const filtered = $("dl-reuse").checked;  // the server applies YouTube's Creative Commons filter when ticked
+  try {
+    const s = await fetchList({ ...sourceChoice(), options: dlOptions() });
+    if (!s) return;
+    setRows(s.rows.map(blankRow));
+    if (source === "channel") {
+      $("dl-detected").textContent = `${plural(s.rows.length, "video")} on “${s.label}”`
+        + `${s.notes.length ? ` (${s.notes.join(", ")})` : ""}.`;
+    } else {
+      dl.lastSearch = { count: s.rows.length, notes: s.notes, filtered };
+      $("dl-detected").textContent = searchSummary();
+    }
+  } catch (e) {
+    setRows([]);
+    $("dl-detected").textContent = source === "channel" ? "Couldn't list this channel." : "The search didn't work.";
+    dlAlert(e.message);
+  }
+  renderDownloadControls();
+}
+
 async function browseSheet() {
-  const file = await desktop().pick_file($("dl-file").value);
+  const file = await pickPath("file", $("dl-file").value);
   if (!file) return;
   $("dl-file").value = file;
   scanSheet(true);
@@ -188,7 +342,9 @@ function setRows(rows) {
     tr.dataset.row = r.row;
     tr.innerHTML = '<td><span class="seg-num"></span></td>'
       + '<td><div class="dl-video"><b></b><a target="_blank" rel="noopener"></a><small></small></div></td>'
-      + '<td><span class="badge"></span></td><td><div class="dl-rowprog"></div></td><td class="muted"></td>';
+      + '<td><span class="badge"></span><button class="icon-btn row-retry hidden" title="Try this video again">'
+      + '<svg class="ic"><use href="#i-refresh"/></svg></button></td>'
+      + '<td><div class="dl-rowprog"></div></td><td class="muted"></td>';
     dl.trs.set(r.row, tr);
     paintRow(r);
     body.appendChild(tr);
@@ -214,11 +370,13 @@ function paintRow(r) {
   link.textContent = r.url;
   link.href = r.url;
   link.classList.toggle("hidden", !name);
-  detail.textContent = r.status === "failed" ? r.detail : "";
+  detail.textContent = r.status === "failed" || r.status === "not_allowed" ? r.detail : "";
+  detail.classList.toggle("note", r.status === "not_allowed");
   detail.title = detail.textContent;
   detail.classList.toggle("hidden", !detail.textContent);
   status.firstChild.textContent = DL_STATUS[r.status] || r.status;
   status.firstChild.className = `badge ${r.status}`;
+  status.lastChild.classList.toggle("hidden", r.status !== "failed");
   prog.firstChild.replaceChildren(...rowProgress(r));
   size.textContent = r.size ? humanSize(r.size) : r.total ? humanSize(r.total) : "";
   tr.classList.toggle("has-file", !!r.path);
@@ -254,14 +412,14 @@ function applyFilter() {
     if (match) shown++;
   }
   $("dl-count").textContent = dl.rows.size;
-  $("dl-empty").textContent = dl.rows.size ? "No matching videos" : "Pick a spreadsheet to see the videos it links to.";
+  $("dl-empty").textContent = dl.rows.size ? "No matching videos" : DL_EMPTY[currentSource()];
   $("dl-empty").classList.toggle("hidden", shown > 0);
 }
 
 // ---------------------------------------------------------------- totals
 
 function counts() {
-  const c = { queued: 0, downloading: 0, downloaded: 0, skipped: 0, failed: 0, cancelled: 0 };
+  const c = { queued: 0, downloading: 0, downloaded: 0, skipped: 0, not_allowed: 0, failed: 0, cancelled: 0 };
   for (const r of dl.rows.values()) c[r.status]++;
   return c;
 }
@@ -279,21 +437,27 @@ function renderStats() {
   $("dl-n-total").textContent = n;
   $("dl-n-downloaded").textContent = c.downloaded;
   $("dl-n-skipped").textContent = c.skipped;
-  $("dl-n-failed").textContent = c.failed + c.cancelled;
+  $("dl-n-failed").textContent = c.failed;  // stopped videos are not failures: Resume goes on with them
+  $("dl-n-blocked").textContent = c.not_allowed;
+  $("dl-tile-blocked").classList.toggle("hidden", !$("dl-reuse").checked && !c.not_allowed);
   $("dl-n-data").textContent = humanSize(data);
   const pct = (k) => (n ? `${(100 * k) / n}%` : "0");
   $("dl-bar-done").style.width = pct(c.downloaded + c.skipped);
-  $("dl-bar-failed").style.width = pct(c.failed + c.cancelled);
+  $("dl-bar-blocked").style.width = pct(c.not_allowed);
+  $("dl-bar-failed").style.width = pct(c.failed);
   $("dl-bar-active").style.width = pct(partial);
 }
 
 function renderRunProgress() {
-  const c = counts(), n = dl.rows.size;
-  const done = DL_FINISHED.reduce((sum, k) => sum + c[k], 0);
+  // This run's rows only: a Resume or Retry goes on with part of the list.
+  const run = [...dl.rows.values()].filter((r) => !dl.runRows || dl.runRows.has(r.row));
+  const c = counts(), n = run.length;
+  const done = run.filter((r) => DL_FINISHED.includes(r.status)).length;
   let speed = 0;
-  for (const r of dl.rows.values()) if (r.status === "downloading") speed += r.speed;
+  for (const r of run) if (r.status === "downloading") speed += r.speed;
   $("dl-progress-title").textContent = dl.stopping ? "Stopping, finishing the current chunks…"
-    : c.downloading ? `Downloading ${plural(c.downloading, "video")}` : n ? "Working…" : "Reading the sheet…";
+    : c.downloading ? `Downloading ${plural(c.downloading, "video")}`
+    : n ? ($("dl-reuse").checked ? "Checking licenses…" : "Working…") : "Getting the list…";
   const parts = [`${done} of ${n} done`];
   if (speed) parts.push(`${humanSize(speed)}/s`);
   parts.push(`${fmtDuration(dl.elapsed)} elapsed`);
@@ -302,7 +466,7 @@ function renderRunProgress() {
 }
 
 function renderDownloadControls() {
-  document.querySelectorAll("#downloader .dl-rail-body :is(input, select, button)").forEach((el) => {
+  document.querySelectorAll("#downloader .dl-rail-body :is(input, select, button, textarea)").forEach((el) => {
     if (el.id === "dl-sheet" || el.id === "dl-url" || el.id === "dl-name") {
       if (dl.running) el.disabled = true;
       else if (el.id === "dl-sheet") el.disabled = el.options.length < 2 && !el.value;
@@ -311,7 +475,17 @@ function renderDownloadControls() {
       el.disabled = dl.running;
     }
   });
-  $("dl-start").disabled = dl.running || !dl.rows.size;
+  $("dl-start").disabled = dl.running || dl.listing || !dl.rows.size;
+  $("dl-find").disabled = dl.running || dl.listing;
+  // Resume / Retry failed: after a run that left videos not done, or failed.
+  const c = counts(), left = c.queued + c.cancelled;
+  const ran = [...dl.rows.values()].some((r) => r.status !== "queued");
+  $("dl-again").classList.toggle("hidden", dl.running || dl.listing || !ran || (!left && !c.failed));
+  $("dl-resume").classList.toggle("hidden", !left);
+  $("dl-resume-n").textContent = left;
+  $("dl-retry").classList.toggle("hidden", !c.failed);
+  $("dl-retry-n").textContent = c.failed;
+  $("downloader").classList.toggle("running", dl.running);
   $("dl-stop").classList.toggle("hidden", !dl.running);
   $("dl-stop").disabled = dl.stopping;
   $("dl-stop").lastChild.textContent = dl.stopping ? "Stopping…" : "Stop";
@@ -323,15 +497,28 @@ function renderDownloadControls() {
 
 // ---------------------------------------------------------------- running
 
-async function startDownload() {
-  if (dl.running || !dl.rows.size) return;
+// Start the list, or with `only` (row numbers) go on with part of it: Resume, Retry failed, one row's ↻.
+async function startDownload(only = null) {
+  if (dl.running || dl.listing || !dl.rows.size || (only && !only.length)) return;
   dlAlert("");
   $("dl-done").classList.add("hidden");
-  await api("POST", "/api/download/start", { ...sheetChoice(), output: $("dl-output").value, options: dlOptions() });
+  // A channel's videos or search results: download exactly the list on screen, don't list again.
+  // Resume / Retry do the same for any source, so rows keep their numbers and sheet names.
+  const listed = only || ["channel", "search"].includes(currentSource())
+    ? [...dl.rows.values()].map((r) => ({ row: r.row, url: r.url, name: r.name || "", title: r.title || "" }))
+    : undefined;
+  cancelListing();
+  await api("POST", "/api/download/start",
+    { ...sourceChoice(), rows: listed, only: only || undefined, output: $("dl-output").value, options: dlOptions() });
+  cancelListing();  // nothing may replace the list from here on
   dl.jobShown = true;
   resetJobView();
   dl.running = true;
-  for (const r of dl.rows.values()) Object.assign(r, { status: "queued", done: 0, total: 0, speed: 0, size: 0, detail: "", path: "" });
+  dl.partial = !!only;
+  dl.runRows = new Set(only || dl.rows.keys());
+  for (const r of dl.rows.values()) {
+    if (dl.runRows.has(r.row)) Object.assign(r, { status: "queued", done: 0, total: 0, speed: 0, size: 0, duration: 0, detail: "", path: "" });
+  }
   dl.rows.forEach(paintRow);
   renderStats();
   renderDownloadControls();
@@ -368,8 +555,9 @@ async function pollDownload() {
   }
   if (!dl.watching) return;
   // Until the sheet is read the job has no rows yet: keep showing the scan.
+  // A Resume / Retry runs part of the list: its rows are updated in place, the others stay as they are.
   if (job.total) {
-    if (dl.rev === -1) setRows(job.rows);
+    if (dl.rev === -1 && !dl.partial) setRows(job.rows);
     else job.rows.forEach(updateRow);
     dl.rev = job.rev;
   }
@@ -409,20 +597,79 @@ function finishDownload(job, live) {
     dlAlert(job.error);
     return;
   }
-  const s = job.summary, c = s.counts;
-  const headline = c.cancelled ? "Stopped early" : "Finished";
-  $("dl-progress-title").textContent = `${headline}: ${c.downloaded} downloaded, ${c.skipped} already there, ${c.failed} failed`;
+  // The whole list on screen (a Resume or Retry ran part of it); the time and data are this run's.
+  const s = job.summary, c = counts(), left = c.queued + c.cancelled;
+  const headline = s.counts.cancelled ? "Stopped early" : "Finished";
+  const blocked = c.not_allowed ? `, ${c.not_allowed} not allowed` : "";
+  $("dl-progress-title").textContent = `${headline}: ${c.downloaded} downloaded, ${c.skipped} already there${blocked}, `
+    + `${c.failed} failed${left ? `, ${left} left` : ""}`;
   $("dl-progress-detail").textContent = `${humanSize(s.bytes)} in ${fmtDuration(s.elapsed)}`;
-  const onDisk = c.downloaded + c.skipped;
+  let onDisk = 0, bytes = 0, seconds = 0;
+  for (const r of dl.rows.values()) {
+    if (r.status !== "downloaded" && r.status !== "skipped") continue;
+    onDisk++;
+    bytes += r.size || 0;
+    seconds += r.duration || 0;
+  }
   let text = `${plural(onDisk, "video")} in ${job.folder}`;
-  if (s.folder_bytes) text += ` · ${humanSize(s.folder_bytes)}`;
-  if (s.folder_duration) text += ` · ${fmtDuration(s.folder_duration)} of video`;
+  if (bytes) text += ` · ${humanSize(bytes)}`;
+  if (seconds) text += ` · ${fmtDuration(seconds)} of video`;
   $("dl-done-text").textContent = text;
   $("dl-open-report").classList.toggle("hidden", !s.report);
   $("dl-open-splitter").classList.toggle("hidden", !onDisk);
   $("dl-done").classList.remove("hidden");
-  if (c.failed) dlAlert(`${plural(c.failed, "video")} couldn't be downloaded. The Failed filter shows which, and report.txt has the reasons.`, true);
-  if (live) toast(c.cancelled ? "Download stopped" : "Download finished");
+  if (c.failed) {
+    dlAlert(`${plural(c.failed, "video")} couldn't be downloaded. Retry failed tries them again; `
+      + "the Failed filter shows which, and report.txt has the reasons.", true);
+  }
+  if (live) toast(s.counts.cancelled ? "Download stopped" : "Download finished");
+  if (panelView($("dl-views")) === "dataset") loadDataset().catch(() => {});
+}
+
+// ---------------------------------------------------------------- dataset overview
+
+// Everything in the output folder, across every run: videos, hours, size, licenses, channels.
+async function loadDataset() {
+  const el = $("dl-dataset");
+  datasetMessage(el, "Counting the videos in the folder… (videos from before are measured once)");
+  let o;
+  try {
+    o = await api("POST", "/api/download/overview",
+      { source: currentSource(), output: $("dl-output").value, file: $("dl-file").value });
+  } catch (e) {
+    $("dl-ds-folder").textContent = "";
+    return datasetMessage(el, e.message);
+  }
+  $("dl-ds-folder").textContent = o.folder;
+  $("dl-ds-folder").title = o.folder;
+  if (!o.videos) return datasetMessage(el, "No videos in this folder yet.");
+  const n = (count, seconds) => `${count} · ${fmtLength(seconds)}`;
+  const notes = [];
+  if (o.licenses.some((g) => g.name === "Not recorded")) {
+    notes.push("Not recorded: downloaded before the app kept licenses, or put in the folder by hand.");
+  }
+  if (o.unmeasured) notes.push(`${plural(o.unmeasured, "video")} couldn't be measured, so the hours leave them out.`);
+  renderDataset(el, [
+    [String(o.videos), "Videos"],
+    [fmtLength(o.seconds), "Total length", fmtLong(o.seconds), "accent"],
+    [humanSize(o.bytes), "Size"],
+    [fmtLength(o.average), "Avg length", `Average: ${fmtLong(o.average)}`],
+    [String(o.reuse_videos), "Reuse-allowed", `${fmtLong(o.reuse_seconds)} of CC BY, CC BY-SA or CC0 video`, "ok"],
+    [String(o.channel_count), "Channels"],
+  ], [
+    { title: "Licenses", rows: o.licenses.map((g) => ({
+      label: g.name, value: g.seconds || g.count, text: n(g.count, g.seconds), title: fmtLong(g.seconds),
+      cls: g.reuse ? "ok" : g.name === "Not recorded" ? "dim" : "warn",
+    })) },
+    { title: "Length", rows: o.lengths.map((g) => ({ label: g.label, value: g.count, text: n(g.count, g.seconds) })) },
+    { title: o.channel_count > o.channels.length ? `Top ${o.channels.length} channels` : "Channels",
+      rows: o.channels.map((c) => ({ label: c.name, value: c.seconds, text: n(c.count, c.seconds), title: c.name })) },
+  ], notes);
+}
+
+function showDlView(view) {
+  showPanelView($("dl-views"), view);
+  if (view === "dataset") loadDataset().catch((e) => datasetMessage($("dl-dataset"), e.message));
 }
 
 function reveal(what, row) {
@@ -451,9 +698,48 @@ $("dl-sheet").addEventListener("change", () => {
   fillSelect($("dl-name"), [["", "Auto-detect"]], "");
   scanSheet();
 });
-["dl-url", "dl-name", "dl-limit"].forEach((id) => $(id).addEventListener("change", () => scanSheet()));
+["dl-url", "dl-name"].forEach((id) => $(id).addEventListener("change", () => scanSheet()));
+$("dl-limit").addEventListener("change", () => {
+  if (currentSource() === "sheet") scanSheet();
+  if (currentSource() === "links") listLinks();
+});
+let linksTimer = null;
+$("dl-links").addEventListener("input", () => {
+  clearTimeout(linksTimer);
+  linksTimer = setTimeout(() => listLinks().catch((e) => dlAlert(e.message)), 300);
+});
+$("dl-source").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-source]");
+  if (b && !b.classList.contains("active")) setSource(b.dataset.source);
+});
+$("dl-find").addEventListener("click", () => findVideos().catch((e) => dlAlert(e.message)));
+$("dl-channel").addEventListener("keydown", (e) => { if (e.key === "Enter") findVideos().catch((err) => dlAlert(err.message)); });
+$("dl-queries").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.ctrlKey) findVideos().catch((err) => dlAlert(err.message));
+});
+$("dl-reuse").addEventListener("change", () => {
+  renderStats();
+  // The list stays as it is (Start checks each license); the hint says whether YouTube's filter narrowed it.
+  if (currentSource() === "search" && dl.rows.size && dl.lastSearch && !dl.running) {
+    $("dl-detected").textContent = searchSummary();
+  }
+});
+$("dl-views").addEventListener("click", (e) => {
+  const tab = e.target.closest(".panel-tab");
+  if (tab) showDlView(tab.dataset.view);
+});
+$("dl-ds-refresh").addEventListener("click", () => loadDataset().catch((e) => datasetMessage($("dl-dataset"), e.message)));
+$("dl-output").addEventListener("change", () => {
+  if (panelView($("dl-views")) === "dataset") loadDataset().catch(() => {});
+});
 $("dl-workers").addEventListener("input", renderWorkers);
 $("dl-start").addEventListener("click", () => startDownload().catch((e) => dlAlert(e.message)));
+$("dl-resume").addEventListener("click", () => startDownload(rowsWith("queued", "cancelled")).catch((e) => dlAlert(e.message)));
+$("dl-retry").addEventListener("click", () => startDownload(rowsWith("failed")).catch((e) => dlAlert(e.message)));
+$("dl-body").addEventListener("click", (e) => {
+  const retry = e.target.closest(".row-retry");
+  if (retry) startDownload([Number(retry.closest("tr").dataset.row)]).catch((err) => dlAlert(err.message));
+});
 $("dl-stop").addEventListener("click", () => stopDownload().catch((e) => toast(e.message, true)));
 $("dl-search").addEventListener("input", applyFilter);
 $("dl-filter").addEventListener("click", (e) => {

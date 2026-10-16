@@ -36,6 +36,45 @@ def find_ffmpeg() -> str | None:
         return shutil.which("ffmpeg")
 
 
+DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
+
+
+def probe_duration(path: Path, ffmpeg: str | None = None) -> float:
+    """How long a video file plays for, in seconds. 0.0 when unknown.
+
+    The app ships ffmpeg without ffprobe, so the length is read from what
+    `ffmpeg -i` prints (it only reads the file's header, so it's quick).
+    """
+    if not ffmpeg:
+        return 0.0
+    try:
+        proc = subprocess.run(
+            [ffmpeg, "-hide_banner", "-nostdin", "-i", str(path)],
+            capture_output=True, timeout=60, text=True, errors="replace", creationflags=NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 0.0
+    match = DURATION_RE.search(proc.stderr)  # "N/A" for a live stream: no match
+    if not match:
+        return 0.0
+    hours, minutes, seconds = match.groups()
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+def length_breakdown(durations: list[float], edges: list[tuple[float, str]]) -> list[dict]:
+    """Count videos (and their seconds) per length range, for a dataset overview.
+
+    `edges` is [(upper limit in seconds, label), ...] in increasing order; the
+    last range catches everything longer.
+    """
+    rows = [{"label": label, "count": 0, "seconds": 0.0} for _, label in edges]
+    for seconds in durations:
+        index = next((i for i, (limit, _) in enumerate(edges) if seconds < limit), len(edges) - 1)
+        rows[index]["count"] += 1
+        rows[index]["seconds"] += seconds
+    return rows
+
+
 def start_again_later():
     """Start the installed app again in a moment, and exit this copy.
 

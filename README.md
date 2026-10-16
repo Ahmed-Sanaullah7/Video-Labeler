@@ -11,7 +11,7 @@ The label tells the model which diarized audio track belongs to the on-screen ac
 
 The app has three tools, picked on the start screen:
 
-1. **Video Downloader**: download every video linked in a spreadsheet (YouTube, other video sites, or direct file links) into one folder. See [Download videos](#download-videos).
+1. **Video Downloader**: download videos into one folder: the links in a spreadsheet, links you paste (YouTube, TikTok, Instagram, Facebook, X, Vimeo and many more sites), every video on a channel or profile, or the results of keyword searches. Optionally only videos whose license allows reuse. See [Download videos](#download-videos).
 2. **Video Splitter**: cut long videos (30–50+ min, where the off-screen speaker keeps changing) into short clips, optionally cropped to part of the picture. See [Split long videos](#split-long-videos).
 3. **Video Labeler**: label who speaks first in each clip. See [How to label](#how-to-label).
 
@@ -52,7 +52,7 @@ Options:
 | `--project NAME` | Project name, shown in the app and used for the output file name (default: the videos folder name) |
 | `--output DIR` | Where `<project>_labels.xlsx` is written (default: an `output` folder next to the videos folder) |
 | `--import FILE` | Seed labels from the old sheet (`Video_Name`, `Onscreen_Speaker` = a/b). Existing labels are never overwritten. |
-| `--browser` | Open the app in the web browser instead of its own window |
+| `--browser` | Open the app in the web browser instead of its own window. **Browse** buttons still work in a browser on the same PC (they open a Windows picker); you can always type or paste a path instead. |
 | `--port N` | Port of the local server (default 5000) |
 | `--host 0.0.0.0` | Let other PCs on the network open the app in their browser at `http://<this-pc>:<port>` |
 
@@ -60,19 +60,30 @@ Options:
 
 The **Settings** panel on the left holds everything below, with **Start download** at its bottom. On the right are the **Overview** (counts and progress), the **Videos** list and the **Activity** log.
 
-1. On the start screen, click **Video Downloader**. Pick the spreadsheet (`.xlsx` or `.csv`) with the video links (**Browse** opens a file picker).
-2. The app reads the sheet and lists the links it found. It picks the column with the links, and a column for the file names (e.g. `Name` or `Title`), by itself. To change them, pick the **Sheet**, **Link column** and **Name column** yourself. **Name column → Video title** names each file after the video's own title instead.
+1. On the start screen, click **Video Downloader**. Under **Source**, pick where the videos come from:
+   - **Sheet**: pick the spreadsheet (`.xlsx` or `.csv`) with the video links (**Browse** opens a file picker). The app reads the sheet and lists the links it found. It picks the column with the links, and a column for the file names (e.g. `Name` or `Title`), by itself. To change them, pick the **Sheet**, **Link column** and **Name column** yourself. **Name column → Video title** names each file after the video's own title instead.
+   - **Links**: paste one or more video links, one per line. They're listed as you type. Any site [yt-dlp](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md) supports works: YouTube, TikTok, Instagram, Facebook, X, Reddit, Vimeo, Dailymotion, Twitch, Bluesky, Pinterest, LinkedIn and many more, plus direct links to video files.
+   - **Channel**: paste a channel or profile link (`https://www.youtube.com/@name`, or just `@name`) and, for YouTube, tick what to include: **Videos**, **Live** (past live streams) and **Shorts**. Click **Find videos** to list the whole channel, newest first. Profiles and channels on TikTok, Vimeo, Twitch, Dailymotion, Rumble, VK and Bilibili work too, and so does a playlist link. Instagram, Facebook and X profiles can't be listed: paste the links of their posts under **Links** instead.
+   - **Search**: type what to search YouTube for, one search per line, and how many **Results per search** to take. Click **Find videos** (or press `Ctrl+Enter`). A video that turns up in several searches is listed once.
+2. Optional: tick **License → Only reuse-allowed videos** to keep only videos whose license allows reuse: Creative Commons **CC BY**, **CC BY-SA** or **CC0** (on YouTube, the "Creative Commons Attribution (reuse allowed)" license). Each video's license is checked just before it downloads, and the others are marked **Not allowed** and skipped without downloading. Non-commercial (NC) and no-derivatives (ND) licenses, such as most TEDx talks, don't count, and neither do links with no license to check (e.g. a direct `.mp4` link). With **Search**, YouTube's own Creative Commons filter is used too, so the list is mostly reusable videos to begin with.
 3. Pick the **Quality** (default 1080p) and how many videos download at once (**Parallel downloads**, default 3; YouTube starts throttling above 4). Optional:
    - **H.264 video**: the most compatible MP4. YouTube otherwise often sends AV1 video, which some players and editors can't open.
    - **Follow playlists**: for a link to a video in a playlist, download the whole playlist instead of only that video.
-   - **Advanced settings**: attempts and timeout per video, download only the first N rows, and **Cookies from** a browser you're signed in with, for age-restricted or members-only videos.
-4. Pick the **Output folder**, or leave it empty for a `downloads` folder next to the spreadsheet. Click **Start download**. **Stop** ends the run after the chunks that are in flight.
+   - **Advanced settings**: attempts and timeout per video, download only the first N videos (for a channel, the newest N), and **Cookies from** a browser you're signed in with, for age-restricted or members-only videos, or when YouTube asks to confirm you're not a bot.
+4. Pick the **Output folder**. For a sheet you can leave it empty for a `downloads` folder next to the spreadsheet. Click **Start download**. **Stop** ends the run after the chunks that are in flight.
+   - **Resume** (after a stop) goes on with the videos that aren't done yet; **Retry failed** tries the failed ones again, and **↻** on a failed row retries just that video. Both use the list on screen, so finished videos keep their status and files are named as before. Half-downloaded YouTube videos continue where they stopped.
+   - **Start download** again runs the whole list; videos already in the folder are skipped, so it also picks up where an earlier session left off (for example after closing the app).
 5. When it's done, **Open in Splitter** opens the Splitter setup with the download folder filled in, to cut the long videos into clips.
+
+**Dataset** (the tab next to **Videos**) sums up everything in the output folder, across every run: how many videos, their total length and size, the average length, how many (and how many hours) are reuse-allowed, the licenses, a length breakdown and the top channels. The app keeps what it learns about each video in `_dataset.json` in the folder; videos it knows nothing about are measured once with ffmpeg.
 
 Notes:
 
 - **Videos already in the output folder are skipped**, so you can run the same sheet again after adding rows, or to retry the ones that failed.
-- Every run writes `_download_report.csv` (one row per link: status, file, title, runtime, size, error) and adds a summary to `report.txt` in the output folder. **Open report** opens `report.txt`.
+- Every run writes `_download_report.csv` (one row per video: status, file, title, channel, license, runtime, size, error) and adds a summary to `report.txt` in the output folder. **Open report** opens `report.txt`.
+- **Social media:** Instagram and Facebook often only show videos to a signed-in browser. If a download fails asking you to log in, set **Advanced settings → Cookies from** to a browser where you're signed in. Social media sites don't publish a license, so with **Only reuse-allowed videos** on their videos are skipped as **Not allowed**. Long captions (TikTok, Instagram) are cut to 100 characters in the file name.
+- **With Only reuse-allowed videos, every saved video gets a `<video>.attribution.txt`** next to it: title, channel, link, license and a suggested credit line. CC BY and CC BY-SA require crediting the creator wherever the clips are used.
+- The license check uses the license the uploader chose. Mislabeled uploads do exist, so spot-check a few before relying on a large batch. Videos already in the output folder from an earlier run are skipped, not checked: use a fresh folder for a reuse-allowed-only dataset.
 - Links in cells with a label such as "Watch" work too: the app reads the cell's hyperlink. A bare YouTube video ID (11 characters) also works.
 - Videos are saved as MP4. Double-click a downloaded video in the list to play it.
 - Downloads use [yt-dlp](https://github.com/yt-dlp/yt-dlp). If YouTube changes something and downloads start failing, a newer version of the app usually fixes it.
@@ -87,8 +98,10 @@ The splitter is laid out like a video editor: the **Media** panel on the left li
    - **Markers:** press `M` to drop a split marker, then click **Segments from markers**. This cuts the whole video into back-to-back pieces at the markers (parts that overlap an existing segment are skipped). Delete the pieces you don't want.
 3. Fine-tune: drag a segment to move it, drag its edges to resize it (the video shows the frame at the edge), or type exact times in the segment list (`1:02:03.500`, `2:03.5` or `123.5`). Segments can't overlap. Double-click a segment, or click ▶ in the list, to play just that segment.
 4. Optional: crop the picture. In **Properties → Crop**, click **Edit crop** (or press `C`), then drag on the video to draw a box. Drag the box to move it and its corners or edges to resize it, or type exact pixel values in **X**, **Y**, **W** and **H**. Pick a shape (**Free**, **1:1**, **9:16** or **16:9**) to lock the box to it. **Reset** goes back to the full frame. Click **Done** (or press `C` or `Esc`) when you're finished; the box stays outlined on the video. The crop applies to every clip of this video.
-5. Click **Export clips** (bottom of the Properties panel). Each segment is saved as its own MP4, numbered in time order: `interview.mp4` → `interview_1.mp4`, `interview_2.mp4`, … You can cancel at any time. Clips that are already finished are kept. Exported clips get a ✓ on the timeline and turn green in the segment list.
+5. Click **Export clips** (bottom of the Properties panel). Each segment is saved as its own MP4: `interview.mp4` → `interview_1.mp4`, `interview_2.mp4`, … Only segments that aren't exported yet are cut: add a segment later and **Export 1 clip** cuts just that one, while clips already exported are kept as they are. You can cancel at any time. Clips that are already finished are kept. Exported clips get a ✓ on the timeline and turn green in the segment list.
 6. Click **Open in Labeler** to label the new clips. The labeler setup opens with the output folder filled in.
+
+**Dataset** (the tab next to **Properties**) sums up the whole output folder: how many clips, their total time (all exported clips together, in hours once it passes an hour) and average length, how much of the long videos they use, how many long videos are split, in progress or not started, a clip-length breakdown, the clips per long video, segments not exported yet, and how many clips are cropped. Each long video's length is measured once with ffmpeg and kept in `_splits.json`.
 
 Shortcuts: `Space` play/pause · `←` / `→` 5 s back/forward (`Shift`: 1 s) · `,` / `.` one frame · `↑` / `↓` previous/next segment edge or marker · `I` / `O` mark in/out · `M` marker · `C` crop · `Delete` delete the selected segment or marker · `Ctrl+Z` undo · `Ctrl`+mouse wheel or `+` / `-` zoom · `0` show the whole video · `Esc` cancel a started segment or finish cropping.
 
@@ -98,7 +111,8 @@ Notes:
 - **Your segments and crop are saved as you work**, in `_splits.json` in the output folder. Open the same folders again to continue. The file also records which part of which source video every exported clip came from, including the crop box (in pixels of the source video).
 - **Changing the crop after exporting** doesn't change clips that are already saved. Their names turn grey in the segment list again and lose their ✓ on the timeline; export again to update them.
 - The crop's width and height are rounded to even pixels, because H.264 video needs an even size. With **9:16** or **16:9**, the clip's size can therefore be a pixel or two off the exact ratio (**1:1** is always exactly square).
-- **Exporting a video again replaces its old clips.** The app asks first. Old clips that aren't in the new segment list are deleted, so the clips always match the segments.
+- **A clip's name never changes and is never reused**, because the Labeler keeps labels by file name. New clips take the next free number, so working from the start of a video to the end they're in time order; a segment added earlier in the video later gets a higher number. The segment list shows which clip each segment is (or will be).
+- **Changing or deleting an exported segment** (its times, or the video's crop) makes its old clip out of date. On the next export the app asks before deleting those old clips, then cuts the changed segments as new clips.
 - In the Media panel, a video's dot is blue when it has exported clips and hollow when it has segments that aren't exported yet.
 - ffmpeg comes with the Windows app. When you run from source, `pip install -r requirements.txt` installs it (`imageio-ffmpeg`). If that isn't possible, an `ffmpeg` on PATH is used instead.
 

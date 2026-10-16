@@ -23,6 +23,7 @@ const tl = {
   crop: null,       // {x, y, w, h} in pixels of the video, applied to every clip; null = full frame
   exported: [],     // clips exported from this video: [{file, start, end, crop}]
   clips: [],        // clip files of this video in the output folder
+  lastClip: 0,      // highest clip number this video ever used (new clips count on from here)
   selected: null,   // {kind: "segment" | "marker", index}
   pendingIn: null,  // start time set with I, waiting for O
   zoom: 1,          // 1 = the whole video fits
@@ -130,6 +131,7 @@ async function loadSplit() {
     await openVideo(last >= 0 ? last : 0);
   }
   if (data.exporting) watchJob();
+  if (panelView($("split-views")) === "dataset") loadSplitDataset().catch(() => {});
 }
 
 // Called by showSection when the splitter is hidden: keep the work.
@@ -174,7 +176,7 @@ async function openVideo(index) {
   sIndex = item.index;
   Object.assign(tl, {
     file: item.file, duration: 0, segments: entry.segments, markers: entry.markers, crop: entry.crop || null,
-    exported: entry.exported, clips: entry.clips,
+    exported: entry.exported, clips: entry.clips, lastClip: entry.last_clip || 0,
     selected: null, pendingIn: null, zoom: 1, undo: [], playUntil: null, vw: 0, vh: 0, cropMode: false,
   });
   cropDrag = null;
@@ -460,18 +462,19 @@ function renderTimeline() {
   const track = $("tl-track");
   track.innerHTML = "";
   if (!tl.duration) return updatePlayhead();
+  const plan = clipPlan();
   tl.segments.forEach((s, i) => {
     const el = document.createElement("div");
     el.className = `tl-seg${isSel("segment", i) ? " selected" : ""}`;
     el.dataset.index = i;
     el.style.left = `${pct(s.start)}%`;
     el.style.width = `${pct(s.end - s.start)}%`;
-    const done = exportState(s, i) === "done";
-    el.title = `Segment ${i + 1}: ${fmtTime(s.start)} – ${fmtTime(s.end)} → ${clipName(i + 1)}${done ? " (exported)" : ""}\n`
+    const { name, state } = plan.clips[i], done = state === "done";
+    el.title = `Segment ${i + 1}: ${fmtTime(s.start)} – ${fmtTime(s.end)} → ${name}${done ? " (exported)" : ""}\n`
       + "Drag to move, drag the edges to resize, double-click to play";
     el.innerHTML = `<span class="tl-handle l" data-edge="start"></span><b>${i + 1}</b><span class="tl-seg-name"></span>`
       + `${done ? '<svg class="ic"><use href="#i-check"/></svg>' : ""}<span class="tl-handle r" data-edge="end"></span>`;
-    el.querySelector(".tl-seg-name").textContent = clipName(i + 1);
+    el.querySelector(".tl-seg-name").textContent = name;
     track.appendChild(el);
   });
   if (tl.pendingIn !== null) {
@@ -820,18 +823,47 @@ function onCropUp() {
 
 // ---------------------------------------------------------------- segment list
 
-// "done": exported with these times and the current crop; "crop": same times, other crop; "": not exported.
-function exportState(s, i) {
-  const name = clipName(i + 1);
-  const same = tl.exported.filter((x) => x.file === name && Math.abs(x.start - s.start) < 0.002 && Math.abs(x.end - s.end) < 0.002);
-  if (same.some((x) => sameCrop(x.crop, tl.crop))) return "done";
-  return same.length ? "crop" : "";
+const sameTimes = (x, s) => Math.abs(x.start - s.start) < 0.002 && Math.abs(x.end - s.end) < 0.002;
+
+function clipNumber(name) { return Number(name.replace(/\.mp4$/i, "").split("_").pop()) || 0; }
+
+// The clip each segment has, or gets on Export (as export_plan in splitter.py works it out):
+// an exported clip that still matches (same times, same crop) keeps its name and isn't cut
+// again; the others take the next free numbers, after every number this video ever used,
+// so a clip's name never changes or gets reused (the labeler keeps labels by file name).
+// clips[i].state: "done" exported; "crop" exported with another crop; "" not exported.
+function clipPlan() {
+  const onDisk = new Set(tl.clips), used = new Set(), todo = [];
+  const clips = tl.segments.map((s, i) => {
+    const match = tl.exported.find((x) => onDisk.has(x.file) && !used.has(x.file) && sameTimes(x, s) && sameCrop(x.crop, tl.crop));
+    if (match) {
+      used.add(match.file);
+      return { name: match.file, state: "done" };
+    }
+    todo.push(i);
+    return { name: "", state: tl.exported.some((x) => sameTimes(x, s)) ? "crop" : "" };
+  });
+  let last = Math.max(tl.lastClip || 0, 0, ...tl.clips.map(clipNumber));
+  for (const i of todo) clips[i].name = clipName(++last);
+  return { clips, todo: todo.length, done: tl.segments.length - todo.length, stale: tl.clips.filter((c) => !used.has(c)) };
+}
+
+function renderExportButton(plan = clipPlan()) {
+  const s = (n) => (n === 1 ? "" : "s");
+  $("export-btn").disabled = !tl.segments.length || jobRunning || (!plan.todo && !plan.stale.length);
+  $("export-btn-text").textContent = plan.todo ? `Export ${plan.todo} clip${s(plan.todo)}`
+    : plan.stale.length ? `Delete ${plan.stale.length} old clip${s(plan.stale.length)}`
+    : tl.segments.length ? "All clips exported" : "Export clips";
+  $("export-btn").title = plan.done
+    ? `${plan.done} clip${s(plan.done)} already exported and kept as ${plan.done === 1 ? "it is" : "they are"}; only new or changed segments are cut.`
+    : "Cut each segment into its own clip";
 }
 
 function renderSegments() {
   const body = $("seg-body");
   body.innerHTML = "";
   if (!tl.file) return;
+  const plan = clipPlan();
   tl.segments.forEach((s, i) => {
     const row = document.createElement("div");
     row.dataset.index = i;
@@ -851,10 +883,12 @@ function renderSegments() {
     row.querySelector('[data-edge="start"]').value = fmtTime(s.start);
     row.querySelector('[data-edge="end"]').value = fmtTime(s.end);
     const clip = row.querySelector(".seg-clip");
-    clip.textContent = clipName(i + 1);
-    const ex = exportState(s, i);
-    clip.classList.toggle("exists", ex === "done");
-    clip.title = ex === "done" ? "Exported" : ex === "crop" ? "Exported with a different crop. Export again to update it." : "Not exported yet";
+    const { name, state } = plan.clips[i];
+    clip.textContent = name;
+    clip.classList.toggle("exists", state === "done");
+    clip.title = state === "done" ? "Exported"
+      : state === "crop" ? "Exported with a different crop. Export again to update it."
+      : "Not exported yet: Export cuts it as this clip";
     body.appendChild(row);
   });
   const n = tl.segments.length;
@@ -864,7 +898,7 @@ function renderSegments() {
   $("seg-total").title = n ? "Total length of the clips, of the whole video" : "";
   $("seg-empty").classList.toggle("hidden", n > 0);
   $("seg-clear").disabled = !n && !tl.markers.length;
-  $("export-btn").disabled = !n || jobRunning;
+  renderExportButton(plan);
 }
 
 function onTimeInput(input) {
@@ -887,20 +921,40 @@ async function exportClips(overwrite = false) {
   }
   $("export-done").classList.add("hidden");
   $("export-error").classList.add("hidden");
+  let started;
   try {
-    await api("POST", "/api/split/export", { file: tl.file, overwrite });
+    started = await api("POST", "/api/split/export", { file: tl.file, overwrite });
   } catch (e) {
-    const existing = e.data && e.data.existing;
-    if (!existing) return toast(e.message, true);
-    const n = tl.segments.length;
-    const list = existing.slice(0, 4).join(", ") + (existing.length > 4 ? ", …" : "");
-    const one = existing.length === 1;
-    const ok = confirm(`${existing.length} clip${one ? "" : "s"} from this video already exist${one ? "s" : ""} in the output folder (${list}).\n\n`
-      + `Replace them with the ${n} clip${n === 1 ? "" : "s"} from the current segments? Old clips that aren't in the new list are deleted.`);
+    // Clips whose segment was changed or deleted: ask before deleting them.
+    const old = e.data && e.data.existing;
+    if (!old) return toast(e.message, true);
+    const list = old.slice(0, 4).join(", ") + (old.length > 4 ? ", …" : "");
+    const one = old.length === 1, n = e.data.new || 0;
+    const ok = confirm(`${old.length} exported clip${one ? " no longer matches its" : "s no longer match their"} segment`
+      + `${one ? "" : "s"} (changed or deleted): ${list}.\n\n`
+      + `Delete ${one ? "it" : "them"}${n ? ` and export ${n} new clip${n === 1 ? "" : "s"}` : ""}? `
+      + "Clips that still match their segment are kept as they are.");
     if (ok) return exportClips(true);
     return;
   }
+  if (!started.job) {  // nothing to cut, only old clips deleted
+    await refreshExported(tl.file);
+    return toast(`Deleted ${started.removed.length} old clip${started.removed.length === 1 ? "" : "s"}`);
+  }
   watchJob();
+}
+
+// What's exported for a video, and the sidebar's counts, after an export changed them.
+async function refreshExported(file) {
+  const data = await api("GET", "/api/split/state");
+  if (!data.ready || !split) return;
+  split.items = data.items;
+  renderSplitList();
+  if (tl.file !== file) return;
+  const entry = await api("GET", `/api/split/segments/${enc(file)}`);
+  Object.assign(tl, { exported: entry.exported, clips: entry.clips, lastClip: entry.last_clip || 0 });
+  renderTimeline();  // check marks on the exported clips
+  renderSegments();
 }
 
 function watchJob() {
@@ -918,7 +972,7 @@ async function pollJob() {
   }
   jobRunning = job.running;
   $("export-progress").classList.toggle("hidden", !job.running);
-  $("export-btn").disabled = job.running || !tl.segments.length;
+  if (tl.file) renderExportButton();
   if (job.running) {
     $("export-text").textContent = `Exporting ${job.current} (${job.index + 1} of ${job.total}) · ${Math.floor(job.percent)}%`;
     $("export-bar").style.width = `${job.percent}%`;
@@ -930,17 +984,8 @@ async function pollJob() {
 
 async function finishJob(job) {
   $("export-bar").style.width = "0";
-  const data = await api("GET", "/api/split/state");
-  if (!data.ready || !split) return;
-  split.items = data.items;
-  renderSplitList();
-  if (tl.file === job.file) {
-    const entry = await api("GET", `/api/split/segments/${enc(job.file)}`);
-    tl.exported = entry.exported;
-    tl.clips = entry.clips;
-    renderTimeline();  // check marks on the exported clips
-    renderSegments();
-  }
+  if (!split) return;
+  await refreshExported(job.file);
   const saved = job.done.length;
   const name = job.file.replace(/\.[^.]+$/, "");
   if (job.error) {
@@ -954,6 +999,53 @@ async function finishJob(job) {
     $("export-done").classList.remove("hidden");
     toast("Export finished");
   }
+  if (panelView($("split-views")) === "dataset") loadSplitDataset().catch(() => {});
+}
+
+// ---------------------------------------------------------------- dataset overview
+
+// All the clips in the output folder and the long videos they come from.
+async function loadSplitDataset() {
+  const el = $("split-dataset");
+  datasetMessage(el, "Counting the clips… (each long video is measured once)");
+  let o;
+  try {
+    o = await api("GET", "/api/split/overview");
+  } catch (e) {
+    return datasetMessage(el, e.message);
+  }
+  const n = (count, seconds) => `${count} · ${fmtLength(seconds)}`;
+  const notes = [];
+  if (o.clips) notes.push(`Clips run from ${fmtLong(o.shortest)} to ${fmtLong(o.longest)}.`);
+  if (o.planned) notes.push(`${plural(o.planned, "segment")} (${fmtLong(o.planned_seconds)}) not exported yet.`);
+  if (o.cropped) notes.push(`${o.cropped} of ${plural(o.clips, "clip")} cropped.`);
+  if (o.unmeasured) notes.push(`${plural(o.unmeasured, "long video")} couldn't be measured, so the source hours leave them out.`);
+  renderDataset(el, [
+    [String(o.clips), "Clips"],
+    [fmtLength(o.clip_seconds), "Total clip time", `All exported clips together: ${fmtLong(o.clip_seconds)}`, "accent"],
+    [fmtLength(o.average), "Average clip", fmtLong(o.average)],
+    [`${Math.round(100 * o.coverage)}%`, "Source used", "Clip time out of all the long videos' time"],
+    [String(o.videos), "Long videos"],
+    [fmtLength(o.source_seconds), "Source length", fmtLong(o.source_seconds)],
+  ], [
+    { title: "Long videos", rows: [
+      { label: "Split", value: o.split, text: plural(o.split, "video"), cls: "ok", title: "Have exported clips" },
+      { label: "In progress", value: o.in_progress, text: plural(o.in_progress, "video"), cls: "warn",
+        title: "Have segments, none exported yet" },
+      { label: "Not started", value: o.untouched, text: plural(o.untouched, "video"), cls: "dim" },
+    ] },
+    { title: "Clip length", rows: o.lengths.map((g) => ({ label: g.label, value: g.count, text: n(g.count, g.seconds) })) },
+    { title: "Clips per video", rows: o.per_video.map((v) => ({
+      label: v.name, value: v.seconds, text: n(v.clips, v.seconds),
+      title: `${v.name}: ${plural(v.clips, "clip")}, ${fmtLong(v.seconds)} of ${fmtLong(v.source)}`
+        + (v.planned ? `; ${plural(v.planned, "segment")} not exported yet` : ""),
+    })) },
+  ], notes);
+}
+
+function showSplitView(view) {
+  showPanelView($("split-views"), view);
+  if (view === "dataset") loadSplitDataset().catch((e) => datasetMessage($("split-dataset"), e.message));
 }
 
 function samePath(a, b) {
@@ -1156,3 +1248,8 @@ $("seg-clear").addEventListener("click", clearAll);
 $("export-btn").addEventListener("click", () => exportClips().catch((e) => toast(e.message, true)));
 $("export-cancel").addEventListener("click", () => api("POST", "/api/split/job/cancel").catch((e) => toast(e.message, true)));
 $("open-labeler").addEventListener("click", () => openInLabeler().catch((e) => toast(e.message, true)));
+$("split-views").addEventListener("click", (e) => {
+  const tab = e.target.closest(".panel-tab");
+  if (tab) showSplitView(tab.dataset.view);
+});
+$("split-ds-refresh").addEventListener("click", () => loadSplitDataset().catch((e) => datasetMessage($("split-dataset"), e.message)));

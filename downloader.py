@@ -1,14 +1,17 @@
-"""Video Downloader: fetch the videos linked in a spreadsheet into one folder.
+"""Video Downloader: fetch videos into one folder from a spreadsheet, a channel or keyword searches.
 
-The page picks a spreadsheet (.xlsx/.xls/.csv) and the columns holding the
-links and the file names; download_engine does the work (yt-dlp for YouTube and
-other sites, a plain HTTP download for direct file links). Videos already in the
-output folder are skipped, so a sheet can be run again after adding rows.
+For a spreadsheet (.xlsx/.xls/.csv) the page picks the columns holding the
+links and the file names; a channel link lists the whole channel; searches list
+the top results of each line. download_engine does the work (yt-dlp for YouTube
+and other sites, a plain HTTP download for direct file links). Videos already in
+the output folder are skipped, so a run can be repeated after adding rows.
+"Only reuse-allowed videos" keeps only videos licensed CC BY, CC BY-SA or CC0.
 Every run writes _download_report.csv and report.txt into the output folder.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import threading
 import time
@@ -24,10 +27,12 @@ lock = threading.Lock()
 
 QUALITIES = {"best", "2160", "1440", "1080", "720", "480", "360"}
 BROWSERS = {"chrome", "edge", "firefox", "brave", "opera", "vivaldi", "chromium"}
+SOURCES = ("sheet", "links", "channel", "search")
 MAX_WORKERS = 8
+MAX_PER_QUERY = 500
 MAX_LOG = 4000  # lines kept for the activity log
 DEFAULTS = {"quality": "1080", "workers": 3, "retries": 3, "timeout": 60, "h264": False, "playlists": False,
-            "cookies": "", "limit": 0}
+            "cookies": "", "limit": 0, "reuse_only": False}
 
 
 def clean_options(raw: dict) -> dict:
@@ -47,23 +52,60 @@ def clean_options(raw: dict) -> dict:
         "playlists": bool(raw.get("playlists")),
         "cookies": cookies,
         "limit": max(0, int(raw.get("limit") or 0)),
+        "reuse_only": bool(raw.get("reuse_only")),
     }
 
 
-def make_spec(data: dict, options: dict | None = None, output: Path | None = None) -> engine.JobSpec:
-    """The engine's JobSpec for the sheet and columns the page chose."""
-    file = (data.get("file") or "").strip().strip('"')
-    if not file:
-        raise engine.JobError("Please pick the spreadsheet with the video links.")
-    options = options or {"limit": int(data.get("limit") or 0)}
-    spec = engine.JobSpec(
-        excel=Path(file),
-        sheet=data.get("sheet") or 0,
-        # None: let the engine work the column out. NO_COLUMN: name the files after the video titles.
-        url_column=data.get("url_column") or None,
-        name_column=engine.NO_COLUMN if data.get("name_column") == "-" else data.get("name_column") or None,
-        limit=options["limit"] or None,
-    )
+def clean_source(data: dict) -> dict:
+    """Where the videos come from: a sheet, pasted links, a channel link, or searches (one per line)."""
+    source = data.get("source") or "sheet"
+    if source not in SOURCES:
+        raise ValueError("Pick Sheet, Links, Channel or Search.")
+    tabs = [tab for tab in engine.CHANNEL_TABS if tab in (data.get("tabs") or [])]
+    queries = [line.strip() for line in str(data.get("queries") or "").splitlines() if line.strip()]
+    links = [line.strip() for line in str(data.get("links") or "").splitlines() if line.strip()]
+    return {
+        "source": source,
+        "links": links,
+        "channel": str(data.get("channel") or "").strip(),
+        "tabs": tabs,
+        "queries": queries,
+        "per_query": min(MAX_PER_QUERY, max(1, int(data.get("per_query") or 50))),
+    }
+
+
+def make_spec(data: dict, options: dict, output: Path | None = None) -> engine.JobSpec:
+    """The engine's JobSpec for the source and settings the page chose."""
+    src = clean_source(data)
+    if src["source"] == "links":
+        if not src["links"]:
+            raise engine.JobError("Paste at least one video link, one per line.")
+        spec = engine.JobSpec(source="links", links=tuple(src["links"]))
+    elif src["source"] == "channel":
+        if not src["channel"]:
+            raise engine.JobError("Paste a channel link, e.g. https://www.youtube.com/@name.")
+        if not src["tabs"]:
+            raise engine.JobError("Tick at least one of Videos, Live and Shorts.")
+        spec = engine.JobSpec(source="channel", channel=src["channel"], channel_tabs=tuple(src["tabs"]))
+    elif src["source"] == "search":
+        if not src["queries"]:
+            raise engine.JobError("Type what to search for, one search per line.")
+        spec = engine.JobSpec(source="search", queries=tuple(src["queries"]), per_query=src["per_query"])
+    else:
+        file = (data.get("file") or "").strip().strip('"')
+        if not file:
+            raise engine.JobError("Please pick the spreadsheet with the video links.")
+        spec = engine.JobSpec(
+            excel=Path(file),
+            sheet=data.get("sheet") or 0,
+            # None: let the engine work the column out. NO_COLUMN: name the files after the video titles.
+            url_column=data.get("url_column") or None,
+            name_column=engine.NO_COLUMN if data.get("name_column") == "-" else data.get("name_column") or None,
+        )
+    spec.limit = options["limit"] or None
+    spec.reuse_only = options["reuse_only"]  # a search uses YouTube's Creative Commons filter for it
+    spec.cookies_from_browser = options["cookies"] or None  # listing a channel may need them too
+    spec.timeout = options["timeout"]
     if output is not None:
         spec.output = output
         spec.quality = options["quality"]
@@ -72,8 +114,27 @@ def make_spec(data: dict, options: dict | None = None, output: Path | None = Non
         spec.timeout = options["timeout"]
         spec.h264 = options["h264"]
         spec.playlists = options["playlists"]
-        spec.cookies_from_browser = options["cookies"] or None
     return spec
+
+
+def listed_scan(data: dict) -> engine.Scan:
+    """The list the page showed: the run downloads exactly these videos.
+
+    Always for a channel or search: listing again would cost time and requests, and
+    could give a different list (search results change, and the Creative Commons filter
+    depends on when the box was ticked). And for Resume / Retry, from any source: the
+    rows keep their numbers and sheet names, so files are named as in the first run.
+    """
+    rows = []
+    for item in data.get("rows") or []:
+        url = str(item.get("url") or "").strip() if isinstance(item, dict) else ""
+        if url.startswith(("http://", "https://")):
+            number = int(item.get("row") or 0) or len(rows) + 1
+            rows.append(engine.VideoRow(number, url, str(item.get("name") or "") or None,
+                                        title=str(item.get("title") or "")))
+    if not rows:
+        raise engine.JobError("Click Find videos first.")
+    return engine.Scan([], "", None, rows, False)
 
 
 def default_output(file: str) -> Path:
@@ -97,16 +158,25 @@ class PageEvents(engine.Events):
         self.job.update_row(row_number, status="downloading", done=done, total=total, speed=speed)
 
     def row_finished(self, result: engine.Result) -> None:
+        # A channel or search row already shows its listed title; keep it when the result has none.
+        title = {"title": result.title} if result.title else {}
         self.job.update_row(result.row_number, status=result.status, detail=" ".join(result.detail.split()),
-                            path=result.path, title=result.title, size=result.size, speed=0.0,
-                            finished=result.status == "downloaded")
+                            path=result.path, size=result.size, duration=result.duration, speed=0.0,
+                            license=result.license,
+                            finished=result.status == "downloaded", **title)
 
 
 class DownloadJob:
-    """Downloads every row of the sheet in a background thread."""
+    """Downloads every row of the list in a background thread.
 
-    def __init__(self, spec: engine.JobSpec):
+    `scan` is the list the page showed (a channel's videos or search results), so
+    the run downloads exactly that; without it the source is read again (a sheet, pasted links).
+    """
+
+    def __init__(self, spec: engine.JobSpec, scan: engine.Scan | None = None, only: set[int] | None = None):
         self.spec = spec
+        self.scan = scan
+        self.only = only  # Resume / Retry: just these row numbers of the list
         self.cancel = threading.Event()
         self.rows: dict[int, dict] = {}
         self.rev = 0  # bumped on every row change, so the page only fetches what changed
@@ -142,16 +212,24 @@ class DownloadJob:
 
     def _run(self):
         try:
-            job = engine.prepare_job(self.spec)
+            job = engine.prepare_job(self.spec, self.scan)
+            if self.only is not None:
+                job.scan = dataclasses.replace(job.scan, rows=[r for r in job.rows if r.row_number in self.only])
+                if not job.rows:
+                    raise engine.JobError("Nothing left to download in this list.")
             with self.data_lock:
                 self.rows = {r.row_number: {"row": r.row_number, "url": r.url, "name": r.name or "", "status": "queued",
-                                            "done": 0, "total": 0, "speed": 0.0, "size": 0, "detail": "", "path": "",
-                                            "title": "", "rev": 0}
+                                            "done": 0, "total": 0, "speed": 0.0, "size": 0, "duration": 0.0,
+                                            "detail": "", "path": "", "title": r.title, "license": "", "rev": 0}
                              for r in job.rows}
                 self.ffmpeg = job.options.ffmpeg is not None
+            if self.only is not None:
+                self.add_log(f"Going on with {len(job.rows)} video{'s' if len(job.rows) != 1 else ''} of the list.")
             self.add_log(f"Saving to {self.folder}")
             if not self.ffmpeg:
                 self.add_log("ffmpeg not found - quality is capped around 360p.")
+            if self.spec.reuse_only:
+                self.add_log("Only reuse-allowed videos (CC BY, CC BY-SA, CC0): each license is checked before downloading.")
             summary = engine.run_job(job, PageEvents(self), self.cancel)
             self.summary = {
                 "counts": summary.counts,
@@ -219,6 +297,8 @@ def api_state():
     return jsonify({
         "file": cfg.get("download_file", ""),
         "output": cfg.get("download_output", ""),
+        "source": {"source": "sheet", "links": [], "channel": "", "tabs": ["videos"], "queries": [], "per_query": 50,
+                   **cfg.get("download_source", {})},
         "options": {**DEFAULTS, **cfg.get("download_options", {})},
         "ffmpeg": find_ffmpeg() is not None,
         "running": job is not None and job.running,
@@ -228,27 +308,33 @@ def api_state():
 
 @bp.post("/scan")
 def api_scan():
-    """Read the sheet: its sheets, columns and the links found in it."""
+    """List the videos: the sheet's sheets, columns and links, a channel's videos, or search results."""
     data = request.get_json(force=True)
+    sheets: list[str] = []
     try:
-        spec = make_spec(data)
-        sheets = engine.sheet_names(spec.excel)
-        if sheets and spec.sheet not in sheets:
-            spec.sheet = sheets[0]
+        spec = make_spec(data, clean_options(data.get("options") or {}))
+        if spec.source == "sheet":
+            sheets = engine.sheet_names(spec.excel)
+            if sheets and spec.sheet not in sheets:
+                spec.sheet = sheets[0]
         scan = engine.scan_source(spec)
     except (engine.JobError, ValueError) as e:
         return error(str(e))
-    except Exception as e:  # noqa: BLE001 - a corrupt workbook is not a crash
-        return error(f"Couldn't read the spreadsheet: {e}")
+    except Exception as e:  # noqa: BLE001 - a corrupt workbook or an odd site is not a crash
+        what = "the spreadsheet" if (data.get("source") or "sheet") == "sheet" else "the videos"
+        return error(f"Couldn't read {what}: {e}")
     return jsonify({
+        "source": spec.source,
         "sheets": sheets,
         "sheet": spec.sheet if sheets else "",
         "columns": scan.columns,
         "url_column": scan.url_column,
         "name_column": scan.name_column,
         "headerless": scan.headerless,
-        "rows": [{"row": r.row_number, "url": r.url, "name": r.name or ""} for r in scan.rows],
-        "default_output": str(default_output(str(spec.excel))),
+        "label": scan.label,
+        "notes": scan.notes,
+        "rows": [{"row": r.row_number, "url": r.url, "name": r.name or "", "title": r.title} for r in scan.rows],
+        "default_output": str(default_output(str(spec.excel))) if spec.source == "sheet" else "",
     })
 
 
@@ -260,18 +346,50 @@ def api_start():
         return error("A download is already running.", 409)
     try:
         options = clean_options(data.get("options") or {})
+        source = clean_source(data)
         file = (data.get("file") or "").strip().strip('"')
         output = (data.get("output") or "").strip().strip('"')
-        output_dir = Path(output).resolve() if output else default_output(file) if file else None
+        if output:
+            output_dir = Path(output).resolve()
+        elif source["source"] == "sheet" and file:
+            output_dir = default_output(file)
+        elif source["source"] == "sheet":
+            output_dir = None  # make_spec asks for the spreadsheet
+        else:
+            return error("Pick an output folder for the videos.")
         spec = make_spec(data, options, output_dir)
+        # Resume / Retry: only these rows, from the exact list the page shows.
+        only = {int(n) for n in data["only"]} if data.get("only") is not None else None
+        listed = listed_scan(data) if spec.source in ("channel", "search") or only is not None else None
     except (engine.JobError, KeyError, TypeError, ValueError) as e:
         return error(str(e) or "Invalid settings.")
-    if not spec.excel.is_file():
+    if spec.source == "sheet" and not spec.excel.is_file():
         return error(f"Spreadsheet not found: {spec.excel}")
-    update_config(download_file=str(spec.excel.resolve()), download_output=output, download_options=options)
+    remembered = {"download_file": str(spec.excel.resolve())} if spec.source == "sheet" else {}
+    update_config(**remembered, download_output=output, download_options=options, download_source=source)
     with lock:
-        job = DownloadJob(spec)
+        job = DownloadJob(spec, listed, only)
     return jsonify({"ok": True})
+
+
+@bp.post("/overview")
+def api_overview():
+    """The dataset in the output folder, across every run: videos, hours, size, licenses, channels."""
+    data = request.get_json(force=True)
+    output = (data.get("output") or "").strip().strip('"')
+    file = (data.get("file") or "").strip().strip('"')
+    if output:
+        folder = Path(output)
+    elif (data.get("source") or "sheet") == "sheet" and file:
+        folder = default_output(file)
+    elif job is not None:
+        folder = Path(job.folder)
+    else:
+        return error("Pick an output folder to see what's in it.")
+    try:
+        return jsonify(engine.folder_overview(folder.resolve(), find_ffmpeg()))
+    except engine.JobError as e:
+        return error(str(e))
 
 
 @bp.get("/job")
