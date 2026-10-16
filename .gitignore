@@ -2,3 +2,5 @@ __pycache__/
 build/
 dist/
 .vscode/
+# Settings the app saves when run from source (local folders, searches, links)
+.labeler_config.json
