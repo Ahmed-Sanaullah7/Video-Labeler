@@ -47,7 +47,7 @@ except ImportError:
     start_again_later()  # just after an update the new files can still be locked
     raise
 
-__version__ = "3.3.0"
+__version__ = "3.3.1"
 GITHUB_REPO = "iqrarwaqas/Video-Labeler"
 
 # Where the app window keeps its local storage (theme and UI preferences).
