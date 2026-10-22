@@ -18,9 +18,9 @@ let sIndex = 0;     // index into split.items
 const tl = {
   file: null,
   duration: 0,
-  segments: [],     // [{start, end}] sorted by start, never overlapping
+  segments: [],     // [{start, end, crop}] sorted by start, never overlapping; crop as below, per clip
   markers: [],      // [t] sorted
-  crop: null,       // {x, y, w, h} in pixels of the video, applied to every clip; null = full frame
+  crop: null,       // {x, y, w, h} in pixels of the video that new segments start with (the one set last); null = full frame
   exported: [],     // clips exported from this video: [{file, start, end, crop}]
   clips: [],        // clip files of this video in the output folder
   lastClip: 0,      // highest clip number this video ever used (new clips count on from here)
@@ -34,6 +34,7 @@ const tl = {
 };
 let drag = null;
 let cropDrag = null;
+let shownCropTarget = null;  // the segment the crop box last showed (null: new segments)
 let openToken = 0;
 let saveTimer = null, savePromise = null, dirty = false;
 let jobTimer = null, jobRunning = false;
@@ -217,7 +218,9 @@ async function flushSave() {
   dirty = false;
   const file = tl.file;
   setSaveBadge("saving");
-  savePromise = api("PUT", `/api/split/segments/${enc(file)}`, { segments: tl.segments, markers: tl.markers, crop: tl.crop });
+  // Every segment says its crop, null for the full frame (a segment without one would get the video's).
+  const segments = tl.segments.map((s) => ({ start: s.start, end: s.end, crop: s.crop || null }));
+  savePromise = api("PUT", `/api/split/segments/${enc(file)}`, { segments, markers: tl.markers, crop: tl.crop });
   try {
     await savePromise;
     const item = split && split.items.find((i) => i.file === file);
@@ -282,6 +285,7 @@ function setIn() {
   const inside = segmentAt(t);
   if (inside >= 0) return toast(`The playhead is inside segment ${inside + 1}. Move it to a free part first.`, true);
   tl.pendingIn = t;
+  tl.selected = null;  // a new segment: the crop box stops editing the last one
   renderAll();
 }
 
@@ -293,7 +297,7 @@ function setOut() {
   if (end - start < MIN_SEG) return toast("The segment is too short. Move the playhead further first.", true);
   if (overlaps(start, end)) return toast("Segments can't overlap. Pick an end before the next segment.", true);
   pushUndo();
-  const seg = { start, end };
+  const seg = { start, end, crop: copyBox(tl.crop) };
   tl.segments.push(seg);
   tl.pendingIn = null;
   tl.selected = { kind: "segment", index: tl.segments.length - 1 };
@@ -317,7 +321,7 @@ function segmentsFromMarkers() {
   const pieces = [];
   for (let i = 0; i < points.length - 1; i++) {
     const start = points[i], end = points[i + 1];
-    if (end - start >= MIN_SEG && !overlaps(start, end)) pieces.push({ start, end });
+    if (end - start >= MIN_SEG && !overlaps(start, end)) pieces.push({ start, end, crop: copyBox(tl.crop) });
   }
   if (!pieces.length) return toast("There's no free room between the markers for new segments.", true);
   pushUndo();
@@ -471,6 +475,7 @@ function renderTimeline() {
     el.style.width = `${pct(s.end - s.start)}%`;
     const { name, state } = plan.clips[i], done = state === "done";
     el.title = `Segment ${i + 1}: ${fmtTime(s.start)} – ${fmtTime(s.end)} → ${name}${done ? " (exported)" : ""}\n`
+      + (s.crop ? `Cropped to ${s.crop.w} × ${s.crop.h}\n` : "")
       + "Drag to move, drag the edges to resize, double-click to play";
     el.innerHTML = `<span class="tl-handle l" data-edge="start"></span><b>${i + 1}</b><span class="tl-seg-name"></span>`
       + `${done ? '<svg class="ic"><use href="#i-check"/></svg>' : ""}<span class="tl-handle r" data-edge="end"></span>`;
@@ -533,6 +538,8 @@ function updatePlayhead() {
     range.style.left = `${pct(Math.min(t, tl.pendingIn))}%`;
     range.style.width = `${pct(Math.abs(t - tl.pendingIn))}%`;
   }
+  // With no segment selected, the crop box is the one of the segment under the playhead.
+  if (!cropDrag && cropTarget() !== shownCropTarget) renderCrop();
 }
 
 function setZoom(z, anchorX) {
@@ -587,6 +594,7 @@ function onPointerDown(e) {
     selectItem("segment", i);
   } else {
     drag = { kind: "seek" };
+    if (tl.selected) selectItem(null);  // a click on the empty timeline drops the selection
     seek(t);
   }
   $("tl-content").setPointerCapture(e.pointerId);
@@ -639,7 +647,24 @@ function aspectName() {
 }
 
 function aspectRatio() { return ASPECTS[aspectName()]; }
-function cropBox() { return tl.crop || { x: 0, y: 0, w: tl.vw, h: tl.vh }; }
+
+// Each segment has its own crop. The crop box shows and edits the selected segment's; with
+// none selected, the one of the segment under the playhead; in a gap, the crop new segments
+// start with. Setting a segment's crop also makes it the one new segments start with.
+function segmentUnder(t) { return tl.segments.findIndex((s) => t >= s.start && t < s.end); }
+
+function cropTarget() {
+  if (tl.selected && tl.selected.kind === "segment") return tl.segments[tl.selected.index] || null;
+  return tl.segments[segmentUnder(sPlayer().currentTime || 0)] || null;
+}
+
+function copyBox(b) { return b ? { ...b } : null; }
+function currentCrop() { const s = cropTarget(); return s ? s.crop : tl.crop; }
+function setCrop(seg, box) {
+  if (seg) seg.crop = copyBox(box);
+  tl.crop = copyBox(box);
+}
+function cropBox() { return currentCrop() || { x: 0, y: 0, w: tl.vw, h: tl.vh }; }
 function isFullFrame(b) { return b.x === 0 && b.y === 0 && b.w >= tl.vw - 1 && b.h >= tl.vh - 1; }
 function sameCrop(a, b) { return a && b ? ["x", "y", "w", "h"].every((k) => a[k] === b[k]) : !a && !b; }
 
@@ -707,11 +732,13 @@ function videoPoint(e) {
 function renderCrop() {
   const ready = !!tl.file && tl.vw > 0;
   if (!ready) tl.cropMode = false;
+  const target = cropTarget(), crop = currentCrop();
+  shownCropTarget = target;
   const editing = tl.cropMode, b = cropBox(), layer = $("crop-layer");
-  layer.classList.toggle("hidden", !ready || !(editing || tl.crop));
+  layer.classList.toggle("hidden", !ready || !(editing || crop));
   layer.classList.toggle("editing", editing);
   layer.classList.toggle("locked", !!aspectRatio());
-  layer.classList.toggle("full", !tl.crop);
+  layer.classList.toggle("full", !crop);
   if (ready) {
     const r = pictureRect();
     Object.assign(layer.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
@@ -729,8 +756,13 @@ function renderCrop() {
     el.classList.toggle("active", el.dataset.aspect === aspectName());
     el.disabled = !ready;
   });
-  $("crop-reset").disabled = !tl.crop;
-  $("crop-info").textContent = !ready ? "" : tl.crop ? `${b.w} × ${b.h}` : `Full frame ${tl.vw} × ${tl.vh}`;
+  $("crop-reset").disabled = !crop;
+  $("crop-all").disabled = !ready || !tl.segments.length || tl.segments.every((s) => sameCrop(s.crop, crop));
+  $("crop-info").textContent = !ready ? "" : crop ? `${b.w} × ${b.h}` : `Full frame ${tl.vw} × ${tl.vh}`;
+  const n = target ? tl.segments.indexOf(target) + 1 : 0;
+  $("crop-target").textContent = !tl.file ? ""
+    : n ? `Segment ${n}'s clip is cut to this box. New segments start with the box you set last.`
+    : "New segments start with this box. Select a segment to crop just that one.";
   for (const input of document.querySelectorAll(".crop-fields input")) {
     input.disabled = !ready;
     if (document.activeElement !== input) input.value = ready ? b[input.dataset.key] : "";
@@ -752,9 +784,9 @@ function onCropField(input) {
   b.y = clamp(b.y, 0, tl.vh - b.h);
   const box = evenBox(b);
   const next = isFullFrame(box) ? null : box;
-  if (sameCrop(next, tl.crop)) return renderCrop();
+  if (sameCrop(next, currentCrop())) return renderCrop();
   pushUndo();
-  tl.crop = next;
+  setCrop(cropTarget(), next);
   changed();
 }
 
@@ -777,23 +809,35 @@ function setAspect(name) {
   h = evenDown(h * fit);
   pushUndo();
   const box = evenBox({ x: clamp(b.x + (b.w - w) / 2, 0, tl.vw - w), y: clamp(b.y + (b.h - h) / 2, 0, tl.vh - h), w, h });
-  tl.crop = isFullFrame(box) ? null : box;
+  setCrop(cropTarget(), isFullFrame(box) ? null : box);
   changed();
 }
 
 function resetCrop() {
-  if (!tl.crop) return;
+  if (!currentCrop()) return;
   pushUndo();
-  tl.crop = null;
+  setCrop(cropTarget(), null);
   changed();
+}
+
+// The crop on show, for every segment of the video.
+function cropAllSegments() {
+  const box = currentCrop();
+  if (!tl.segments.length || tl.segments.every((s) => sameCrop(s.crop, box))) return;
+  pushUndo();
+  for (const s of tl.segments) s.crop = copyBox(box);
+  tl.crop = copyBox(box);
+  changed();
+  toast(`All ${tl.segments.length} segments use this crop now`);
 }
 
 function onCropDown(e) {
   if (!tl.cropMode || e.button !== 0) return;
   const handle = e.target.dataset.h;
   // On the box: move it. Outside it, or when there's no crop yet: draw a new one.
-  const kind = handle ? "resize" : e.target === $("crop-box") && tl.crop ? "move" : "draw";
-  cropDrag = { kind, handle, p0: videoPoint(e), orig: cropBox(), x0: e.clientX, y0: e.clientY, moved: false };
+  const kind = handle ? "resize" : e.target === $("crop-box") && currentCrop() ? "move" : "draw";
+  // The segment is fixed for the whole drag, even if the video plays on into the next one.
+  cropDrag = { kind, handle, seg: cropTarget(), p0: videoPoint(e), orig: cropBox(), x0: e.clientX, y0: e.clientY, moved: false };
   $("crop-layer").setPointerCapture(e.pointerId);
   e.preventDefault();
 }
@@ -807,7 +851,7 @@ function onCropMove(e) {
   }
   const box = nextCropBox(cropDrag, videoPoint(e));
   if (box) {
-    tl.crop = box;
+    setCrop(cropDrag.seg, box);
     renderCrop();
   }
 }
@@ -817,7 +861,7 @@ function onCropUp() {
   const d = cropDrag;
   cropDrag = null;
   if (!d.moved) return;
-  if (tl.crop && isFullFrame(tl.crop)) tl.crop = null;
+  if (tl.crop && isFullFrame(tl.crop)) setCrop(d.seg, null);
   changed();
 }
 
@@ -835,7 +879,7 @@ function clipNumber(name) { return Number(name.replace(/\.mp4$/i, "").split("_")
 function clipPlan() {
   const onDisk = new Set(tl.clips), used = new Set(), todo = [];
   const clips = tl.segments.map((s, i) => {
-    const match = tl.exported.find((x) => onDisk.has(x.file) && !used.has(x.file) && sameTimes(x, s) && sameCrop(x.crop, tl.crop));
+    const match = tl.exported.find((x) => onDisk.has(x.file) && !used.has(x.file) && sameTimes(x, s) && sameCrop(x.crop, s.crop));
     if (match) {
       used.add(match.file);
       return { name: match.file, state: "done" };
@@ -872,6 +916,7 @@ function renderSegments() {
       <div class="seg-top">
         <span class="seg-num">${i + 1}</span>
         <span class="seg-clip"></span>
+        ${s.crop ? `<svg class="ic seg-crop"><title>Cropped to ${s.crop.w} × ${s.crop.h}</title><use href="#i-crop"/></svg>` : ""}
         <span class="seg-dur" title="Length">${fmtTime(s.end - s.start)}</span>
         <button class="icon-btn" data-act="play" title="Play this segment"><svg class="ic"><use href="#i-play"/></svg></button>
         <button class="icon-btn" data-act="delete" title="Delete this segment"><svg class="ic"><use href="#i-trash"/></svg></button>
@@ -1210,6 +1255,7 @@ cropLayer.addEventListener("pointercancel", onCropUp);
 new ResizeObserver(() => renderCrop()).observe(sp);
 $("crop-btn").addEventListener("click", () => toggleCrop());
 $("crop-reset").addEventListener("click", resetCrop);
+$("crop-all").addEventListener("click", cropAllSegments);
 $("crop-aspect").addEventListener("click", (e) => {
   const b = e.target.closest("[data-aspect]");
   if (b) setAspect(b.dataset.aspect);

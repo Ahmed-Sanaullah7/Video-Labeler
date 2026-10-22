@@ -597,6 +597,7 @@
             <div class="prop-row">
               <button id="crop-btn" class="btn sm grow" title="Draw the crop box on the video (C)"><svg class="ic"><use href="#i-crop"/></svg><span id="crop-btn-text">Edit crop</span><kbd>C</kbd></button>
               <button id="crop-reset" class="btn ghost sm" title="Go back to the full frame">Reset</button>
+              <button id="crop-all" class="btn ghost sm" title="Use this crop for every segment of the video">All segments</button>
             </div>
             <div id="crop-aspect" class="segmented full sm" title="Shape of the crop">
               <button data-aspect="free">Free</button>
@@ -610,7 +611,7 @@
               <label class="num"><span>W</span><input id="crop-w" data-key="w" type="number" min="32" step="2"></label>
               <label class="num"><span>H</span><input id="crop-h" data-key="h" type="number" min="32" step="2"></label>
             </div>
-            <p class="prop-note">Every clip of this video is cut to the box.</p>
+            <p id="crop-target" class="prop-note"></p>
           </div>
         </details>
         <details class="prop" open>

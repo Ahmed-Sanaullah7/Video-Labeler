@@ -3,9 +3,9 @@
 The user marks segments on a timeline in the app. Each segment is cut out with
 ffmpeg (re-encoded, so cuts are frame-accurate) and saved to the output
 (dataset) folder as <video>_1.mp4, <video>_2.mp4, ... numbered in time order.
-An optional crop box per source video is applied to all of its clips.
+Each segment can have its own crop box; its clip is cut to it.
 
-Segments, markers, the crop and the list of exported clips are kept per source
+Segments (with their crops), markers and the list of exported clips are kept per source
 video in <output>/_splits.json, so a long video can be split over several
 sessions and every clip can be traced back to its source. The dataset overview
 also keeps each source video's length there, measured once.
@@ -48,14 +48,17 @@ def clip_number(name: str) -> int:
     return int(Path(name).stem.rsplit("_", 1)[1])
 
 
-def clean_segments(raw) -> list[dict]:
-    """Validate segments from the page: sorted by start, long enough, not overlapping."""
+def clean_segments(raw, crop: dict | None = None) -> list[dict]:
+    """Validate segments from the page: sorted by start, long enough, not overlapping, each with its crop.
+
+    A segment sent without one (a page from before crops were per segment) gets `crop`.
+    """
     segments = []
     for s in raw or []:
         start, end = round(float(s["start"]), 3), round(float(s["end"]), 3)
         if start < 0 or end - start < MIN_SEGMENT - 1e-6:
             raise ValueError("Each segment must be at least 0.2 s long.")
-        segments.append({"start": start, "end": end})
+        segments.append({"start": start, "end": end, "crop": clean_crop(s["crop"]) if "crop" in s else crop})
     segments.sort(key=lambda s: s["start"])
     for a, b in zip(segments, segments[1:]):
         if b["start"] < a["end"] - 1e-6:
@@ -75,6 +78,17 @@ def clean_crop(raw) -> dict | None:
     if w % 2 or h % 2:  # H.264 with yuv420p needs an even width and height
         raise ValueError("The crop width and height must be even.")
     return {"x": x, "y": y, "w": w, "h": h}
+
+
+def segments_of(e: dict) -> list[dict]:
+    """A video's segments, each with its own crop (None = the full frame).
+
+    Before crops were per segment, the video's one crop (its "crop") applied to
+    every segment, so a segment saved without a "crop" still gets that one.
+    """
+    crop = e.get("crop")
+    return [{"start": s["start"], "end": s["end"], "crop": s["crop"] if "crop" in s else crop}
+            for s in e.get("segments", [])]
 
 
 class SplitProject:
@@ -105,7 +119,8 @@ class SplitProject:
 
     def entry(self, file: str) -> dict:
         e = self.data.get(file, {})
-        return {"segments": e.get("segments", []), "markers": e.get("markers", []), "crop": e.get("crop"),
+        # "crop": the crop new segments start with, the one set last.
+        return {"segments": segments_of(e), "markers": e.get("markers", []), "crop": e.get("crop"),
                 "exported": e.get("exported", []), "last_clip": e.get("last_clip", 0)}
 
     def existing_clips(self, file: str) -> list[str]:
@@ -141,7 +156,7 @@ def export_plan(current: SplitProject, file: str) -> dict:
     keep, todo, used = [], [], set()
     for seg in entry["segments"]:
         match = next((x for x in entry["exported"]
-                      if x["file"] in on_disk and x["file"] not in used and same_clip(x, seg, entry["crop"])), None)
+                      if x["file"] in on_disk and x["file"] not in used and same_clip(x, seg)), None)
         if match:
             keep.append(match)
             used.add(match["file"])
@@ -159,11 +174,11 @@ def export_plan(current: SplitProject, file: str) -> dict:
 class ExportJob:
     """Cuts segments of one video, one after another, in a background thread.
 
-    `segments` is [(clip number, segment)]: only what isn't exported yet.
+    `segments` is [(clip number, segment)]: only what isn't exported yet. Each is cut to its own crop.
     """
 
-    def __init__(self, project: SplitProject, file: str, segments: list[tuple[int, dict]], crop: dict | None, ffmpeg: str):
-        self.project, self.file, self.segments, self.crop, self.ffmpeg = project, file, segments, crop, ffmpeg
+    def __init__(self, project: SplitProject, file: str, segments: list[tuple[int, dict]], ffmpeg: str):
+        self.project, self.file, self.segments, self.ffmpeg = project, file, segments, ffmpeg
         self.total_time = sum(s["end"] - s["start"] for _, s in segments)
         self.done_time = 0.0
         self.index = 0
@@ -213,7 +228,7 @@ class ExportJob:
         final = self.project.output_dir / name
         part = final.with_name(final.stem + ".part.mp4")
         length = seg["end"] - seg["start"]
-        crop = self.crop
+        crop = seg.get("crop")
         cmd = [
             self.ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
             # -ss before -i seeks fast; with re-encoding the cut is still frame-accurate.
@@ -245,7 +260,7 @@ class ExportJob:
         with lock:
             entry = self.project.data.setdefault(self.file, {})
             entry.setdefault("exported", []).append({
-                "file": name, "start": seg["start"], "end": seg["end"], "crop": self.crop,
+                "file": name, "start": seg["start"], "end": seg["end"], "crop": crop,
                 "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             })
             entry["exported"].sort(key=lambda x: x["start"])
@@ -328,9 +343,9 @@ def api_put_segments(file):
     require(file)
     data = request.get_json(force=True)
     try:
-        segments = clean_segments(data.get("segments"))
+        crop = clean_crop(data.get("crop"))  # the crop new segments start with
+        segments = clean_segments(data.get("segments"), crop)
         markers = sorted(round(float(t), 3) for t in data.get("markers") or [] if float(t) >= 0)
-        crop = clean_crop(data.get("crop"))
     except (KeyError, TypeError, ValueError) as e:
         return error(str(e) or "Invalid segments.")
     with lock:
@@ -377,7 +392,7 @@ def api_export():
         project.save()
         if not plan["todo"]:
             return jsonify({"ok": True, "job": False, "removed": plan["remove"]})
-        job = ExportJob(project, file, plan["todo"], entry["crop"], ffmpeg)
+        job = ExportJob(project, file, plan["todo"], ffmpeg)
     return jsonify({"ok": True, "job": True, "removed": plan["remove"]})
 
 
@@ -392,10 +407,10 @@ def api_job_cancel():
     return jsonify({"ok": True})
 
 
-def same_clip(exported: dict, segment: dict, crop: dict | None) -> bool:
+def same_clip(exported: dict, segment: dict) -> bool:
     """An exported clip still matches its segment: same times, same crop."""
     return (abs(exported["start"] - segment["start"]) < 0.002 and abs(exported["end"] - segment["end"]) < 0.002
-            and (exported.get("crop") or None) == (crop or None))
+            and (exported.get("crop") or None) == (segment.get("crop") or None))
 
 
 def folder_summary(source_dir: Path, output_dir: Path) -> dict:
@@ -411,8 +426,7 @@ def folder_summary(source_dir: Path, output_dir: Path) -> dict:
         exported = [x for x in entry.get("exported", []) if (output_dir / x["file"]).is_file()]
         clips += len(exported)
         seconds += sum(x["end"] - x["start"] for x in exported)
-        planned += sum(1 for s in entry.get("segments", [])
-                       if not any(same_clip(x, s, entry.get("crop")) for x in exported))
+        planned += sum(1 for s in segments_of(entry) if not any(same_clip(x, s) for x in exported))
     return {
         "videos": len(list_videos(source_dir)) if source_dir.is_dir() else 0,
         "clips": clips,
@@ -461,7 +475,7 @@ def api_overview():
         lengths = [x["end"] - x["start"] for x in exported]
         clip_lengths += lengths
         cropped += sum(1 for x in exported if x.get("crop"))
-        todo = [s for s in entry.get("segments", []) if not any(same_clip(x, s, entry.get("crop")) for x in exported)]
+        todo = [s for s in segments_of(entry) if not any(same_clip(x, s) for x in exported)]
         planned += len(todo)
         planned_seconds += sum(s["end"] - s["start"] for s in todo)
         if exported:

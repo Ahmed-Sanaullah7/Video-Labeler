@@ -708,6 +708,7 @@ input:disabled, select:disabled { opacity: .5; cursor: default; }
 .seg-clip { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
 .seg-clip.exists { color: var(--onscreen); font-weight: 600; }
 .seg-dur { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.seg-crop { flex: none; width: 13px; height: 13px; color: var(--muted); }
 .seg-row .icon-btn { width: 22px; height: 22px; }
 .seg-row .icon-btn .ic { width: 13px; height: 13px; }
 .seg-times { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 5px; }
